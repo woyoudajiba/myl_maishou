@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light">
+  <title>买手互拓账号映射 · 找商品</title>
+  <link rel="icon" href="/maishou/admin/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/maishou/admin/admin.css"><link rel="stylesheet" href="/maishou/admin/erp-users/erp-users.css"><script defer src="/maishou/admin/erp-users/erp-users.js"></script>
+</head>
+<body><main class="shell">
+  <header class="masthead"><a class="brand" href="/maishou/admin/">找商品<span>管理员设置</span></a><span class="account-badge">TDL 管理员</span></header>
+  <section id="login-warning" class="login-panel" hidden><h1>需要 TDL 管理员登录</h1><p class="subhead">请先登录模型用量页面，并确认当前账号具有 TDL 管理员权限。</p><a class="quiet" href="/maishou/admin/">前往管理员入口</a></section>
+  <section id="mapping-view" hidden>
+    <div class="page-heading"><div><p class="eyebrow">BUYER ERP ACCESS</p><h1>买手互拓账号</h1><p class="subhead">每位买手登录 TDL 后自动关联自己的互拓账号。密码在服务器加密保存，不会下发到桌面端。</p></div><a class="quiet" href="/maishou/admin/">返回模型用量</a></div>
+    <div class="security-note"><strong>管理员专用</strong><span>互拓接口地址和 OAuth 客户端凭据加密保存在服务器；每位买手的互拓账号和密码按 TDL 用户分别关联。买手无需在客户端填写凭据。</span></div>
+    <details class="panel service-panel"><summary>服务器连接设置（管理员统一配置）</summary><div class="panel-heading"><div><h2>互拓服务连接</h2><p id="service-status">检查服务器连接配置</p></div></div><form id="service-form" class="mapping-form"><div class="form-grid"><label>互拓 API 根地址<input id="service-base" type="url" required placeholder="https://erp.example.com/prod-api/admin-api"></label><label>租户 ID<input id="service-tenant" required inputmode="numeric" placeholder="由互拓管理员提供"></label><label>OAuth 客户端 ID<input id="service-client" required autocomplete="off"></label><label>OAuth 客户端密钥<input id="service-secret" type="password" autocomplete="new-password" placeholder="新配置必填；留空保持原密钥"></label></div><div class="service-flags"><label><input id="service-drafts" type="checkbox">允许保存互拓草稿</label><label><input id="service-convert" type="checkbox">允许草稿转换到待审核</label></div><p class="service-warning">公共连接由管理员配置一次。仅服务器显式授权的测试地址可以使用 HTTP，其余地址需使用 HTTPS。</p><p id="service-message" class="message" role="status"></p><button type="submit">加密保存互拓服务连接</button></form></details>
+    <section class="panel mapping-panel"><div class="panel-heading"><div><h2>账号映射</h2><p id="mapping-count">正在读取 TDL 账号</p></div><button id="refresh-users" class="quiet" type="button">刷新账号</button></div>
+      <form id="mapping-form" class="mapping-form">
+        <label>TDL 用户<select id="tdl-user" required><option value="">选择已登录过桌面端的 TDL 用户</option></select></label>
+        <div class="form-grid"><label>互拓账号<input id="erp-username" required maxlength="160" autocomplete="off"></label><label>互拓密码<input id="erp-password" type="password" maxlength="512" autocomplete="new-password" placeholder="新账号必填；更新时留空保持原密码"></label></div>
+        <p id="mapping-message" class="message" role="status"></p><div class="mapping-actions"><button type="submit">保存账号映射</button><button id="test-mapping" type="button" class="quiet" disabled>检查当前账号连接</button><button id="disable-mapping" type="button" class="quiet" disabled>停用当前映射</button></div>
+      </form>
+    </section>
+    <section class="panel"><div class="panel-heading"><div><h2>TDL 用户列表</h2><p>用户首次在桌面端登录后会出现在此处。</p></div></div><div class="table-wrap"><table><thead><tr><th>TDL 用户</th><th>互拓账号</th><th>状态</th><th>最近登录</th><th></th></tr></thead><tbody id="user-table"></tbody></table></div><p id="empty-users" class="empty" hidden>尚无 TDL 用户记录。让买手先登录一次桌面端，然后刷新此页。</p></section>
+  </section>
+</main></body></html>

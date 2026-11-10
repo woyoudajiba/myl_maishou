@@ -1,0 +1,28 @@
+[Unit]
+Description=Maishou managed model gateway and usage dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/home/wsf/productC/backend
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=4600
+Environment=USAGE_FILE=/home/wsf/productC/data/usage.json
+EnvironmentFile=/home/wsf/productC/model-provider.env
+EnvironmentFile=-/home/wsf/productC/erp-proxy.env
+ExecStart=/usr/bin/node /home/wsf/productC/backend/server.js
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/wsf/productC/data
+
+[Install]
+WantedBy=multi-user.target

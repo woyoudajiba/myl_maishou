@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>模型用量 · 找商品</title>
+  <link rel="icon" href="/maishou/admin/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/maishou/admin/admin.css">
+  <script defer src="/maishou/admin/admin.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead"><a class="brand" href="/maishou/admin/">找商品<span>服务用量</span></a><span id="account-badge" class="account-badge" hidden></span></header>
+    <section id="login-view" class="login-panel">
+      <p class="eyebrow">TDL ACCOUNT</p><h1>登录模型用量</h1><p class="subhead">使用现有 TDL 账号登录。每个账号只能查看自己的使用情况，TDL 管理员可查看全体账号。</p>
+      <form id="login-form"><label>TDL 账号<input name="username" autocomplete="username" required maxlength="120"></label><label>密码<input name="password" type="password" autocomplete="current-password" required maxlength="512"></label><p id="login-error" class="error" role="alert"></p><button type="submit">登录查看</button></form>
+      <p class="privacy">只统计请求次数、结果状态、Token 数及耗时；不会保存商品图片、提示词或密钥。</p>
+    </section>
+    <section id="dashboard" hidden>
+      <div class="page-heading"><div><p class="eyebrow">MODEL USAGE</p><h1>模型使用情况</h1><p id="scope-copy" class="subhead"></p></div><div class="admin-actions"><a id="erp-users-link" class="quiet" href="/maishou/admin/erp-users/" hidden>买手互拓账号</a><button id="logout" class="quiet" type="button">退出登录</button></div></div>
+      <section class="panel" id="own-erp-panel"><div class="panel-heading"><div><h2>我的互拓账号</h2><p id="own-erp-status">正在读取</p></div></div><p>只需填写互拓账号和密码，连接参数由服务器统一提供。</p><form id="own-erp-form"><label>互拓账号<input id="own-erp-username" required maxlength="160" autocomplete="username"></label><label>互拓密码<input id="own-erp-password" type="password" maxlength="512" autocomplete="new-password" placeholder="首次填写密码；留空保留已保存密码"></label><div class="admin-actions"><button type="submit">保存账号</button><button id="own-erp-test" type="button" class="quiet">检查连接</button><button id="own-erp-clear" type="button" class="quiet">清除账号</button></div><p id="own-erp-message" class="error" role="status" aria-live="polite"></p></form></section>
+      <div class="toolbar"><label>统计范围<select id="range"><option value="7">近 7 天</option><option value="30" selected>近 30 天</option><option value="90">近 90 天</option></select></label><button id="refresh" class="quiet" type="button">刷新</button></div>
+      <div class="metrics"><article><span>请求次数</span><strong id="requests">0</strong><small id="success-line">成功 0 · 失败 0</small></article><article><span>Token 总量</span><strong id="total-tokens">0</strong><small id="token-line">输入 0 · 输出 0</small></article><article><span>平均响应</span><strong id="average-latency">0 秒</strong><small id="last-used">最近使用：暂无</small></article></div>
+      <section id="accounts-panel" class="panel" hidden><div class="panel-heading"><div><h2>账号汇总</h2><p>点击账号查看该账号按日用量。</p></div><input id="search-accounts" type="search" placeholder="搜索账号"></div><div class="table-wrap"><table><thead><tr><th>账号</th><th>请求</th><th>成功 / 失败</th><th>输入 Token</th><th>输出 Token</th><th>最近使用</th></tr></thead><tbody id="accounts-table"></tbody></table></div></section>
+      <section class="panel"><div class="panel-heading"><div><h2 id="daily-title">每日用量</h2><p id="selected-account"></p></div><button id="back-to-all" class="quiet" type="button" hidden>返回所有账号</button></div><div class="table-wrap"><table><thead><tr><th>日期</th><th>请求</th><th>成功</th><th>失败</th><th>输入 Token</th><th>输出 Token</th><th>总 Token</th><th>平均响应</th></tr></thead><tbody id="daily-table"></tbody></table></div><p id="empty-state" class="empty" hidden>所选时间范围暂无模型请求。</p></section>
+      <p id="page-error" class="error" role="alert"></p>
+      <footer>模型由服务端统一管理 · 账号身份由 TDL 验证 · 页面不提供模型密钥配置</footer>
+    </section>
+  </main>
+</body>
+</html>

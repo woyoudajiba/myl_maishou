@@ -1,0 +1,78 @@
+{
+  "name": "product-comparison-desktop",
+  "version": "26.11.10",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "dev": "electron .",
+    "dist:win": "node ../scripts/package-release.js"
+  },
+  "devDependencies": {
+    "electron": "45.0.0",
+    "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "0.9.12",
+    "adm-zip": "0.6.1",
+    "electron-updater": "6.8.11",
+    "playwright-core": "1.62.1",
+    "sharp": "0.35.5"
+  },
+  "build": {
+    "appId": "com.productcomparison.desktop",
+    "productName": "找商品",
+    "artifactName": "ProductComparison-${version}-${arch}.${ext}",
+    "electronVersion": "45.0.0",
+    "electronDist": "node_modules/electron/dist",
+    "buildVersion": "26.11.10.1",
+    "directories": {
+      "app": ".build-app",
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "review.js",
+      "review-ui.js",
+      "review.css",
+      "vision-protocol.js",
+      "image-policy.js",
+      "vision-queue.js"
+    ],
+    "asarUnpack": [
+      "desktop/node_modules/@img/sharp-win32-x64/**/*",
+      "desktop/node_modules/@img/sharp-libvips-win32-x64/**/*"
+    ],
+    "win": {
+      "icon": "assets/app-icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "executableName": "ProductComparison",
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "include": "installer/upgrade.nsh",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "runAfterFinish": true
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://wsfile.cn/productC/updates/",
+        "channel": "latest"
+      }
+    ],
+    "detectUpdateChannel": false,
+    "releaseInfo": {
+      "releaseName": "26.11.10-v1",
+      "releaseNotes": "四个平台按各自商品页结构采集标题、货号、店铺、供货价、阶梯价、颜色尺码和分组图片；处理懒加载并显示缺项与图集完整度。供应商资料及映射模型瞬时错误自动重试最多3次，耗尽后可手动续一轮。青创网上传/搜图超时显示失败阶段且不自动重发，避免重复消耗搜图额度。中文货号在资料中保留原值；当前ERP草稿契约仍限制字母、数字和 /，不兼容的货号会在提交前拦截。"
+    }
+  }
+}

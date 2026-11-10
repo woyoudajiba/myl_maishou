@@ -1,0 +1,21 @@
+{
+  "name": "find-product-minimal-core",
+  "version": "0.6.0",
+  "private": true,
+  "scripts": {
+    "build:vision": "node scripts/build-vision-runtime.js",
+    "test": "node --test test/*.test.js",
+    "install:browser": "node browser-test/install.js",
+    "test:browser": "node --test --test-concurrency=1 browser-test/*.test.js",
+    "check:model": "node scripts/check-model.js",
+    "check:vision": "node scripts/check-vision-api.js",
+    "table-server": "node table-server/server.mjs",
+    "test:table-server": "node --test table-server/test/*.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "4.3.1"
+  }
+}

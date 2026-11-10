@@ -1,0 +1,5 @@
+{
+  "model": "gpt-image-2.5",
+  "size": "1024x1024",
+  "prompt": "Use case: icon\nAsset type: Windows desktop app icon for a Chinese product comparison workstation.\nPrimary request: a single polished, minimal app icon combining a shopping bag and a magnifying glass, instantly readable at 32 pixels.\nStyle/medium: crisp flat graphic with restrained depth, professional desktop software.\nComposition/framing: centered white shopping bag silhouette, small magnifying glass integrated at lower right; generous 12 percent safe padding; fills one square tile.\nColor palette: deep teal #0f766e tile, white symbol, subtle mint accent.\nScene/backdrop: uniform deep teal full bleed square background, no exterior margins.\nText: no text, no letters, no numbers.\nAvoid: mockup, multiple icons, tiny detail, watermark, thick exterior shadow."
+}

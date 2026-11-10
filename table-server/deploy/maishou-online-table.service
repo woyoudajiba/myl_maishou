@@ -1,0 +1,26 @@
+[Unit]
+Description=Find Product shared buyer table
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/home/wsf/productC/online-table
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=43900
+Environment=TABLE_AUTH_URL=https://wsfile.cn/myladmin/api/auth/me
+ExecStart=/usr/bin/node /home/wsf/productC/online-table/server.mjs
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/wsf/productC/online-table/data
+
+[Install]
+WantedBy=multi-user.target

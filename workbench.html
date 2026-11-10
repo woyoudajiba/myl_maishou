@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>找商品 · 精简工作台</title><link rel="stylesheet" href="workbench.css"><link rel="stylesheet" href="review.css"></head>
+<body><main>
+<h1>找商品 <small id="version" aria-label="扩展版本"></small></h1>
+<div id="platforms" aria-live="polite"></div>
+<section id="connectionDetails" aria-labelledby="connectionTitle">
+  <div class="connection-heading"><div><h2 id="connectionTitle">平台连接</h2><p class="note">打开平台并登录后，检查当前页面是否可读取。</p></div><div class="connection-actions"><button id="checkConnection">检查连接</button><button id="downloadConnection" disabled>导出诊断</button></div></div>
+  <div class="connection-summary"><span id="connectionStatus" role="status">尚未检查，点击“检查连接”查看平台状态。</span><time id="connectionCheckedAt" hidden></time></div>
+  <div id="connectionOutput" aria-busy="false"></div>
+  <p class="connection-note">检查不会提交图片或发起搜图。各平台需单独登录；页面已响应不代表已有搜图权限。</p>
+</section>
+<details id="desktopBridge" open>
+  <summary>Electron 本地桌面端 · <span id="desktopStatus">未连接</span></summary>
+  <div class="bar"><label>本机地址<input id="desktopEndpoint" type="url" value="http://127.0.0.1:43821"></label><label>长期配对码<input id="desktopToken" type="password" autocomplete="off" spellcheck="false" placeholder="首次从 Electron 桌面端复制"></label><button id="connectDesktop">连接桌面端</button></div>
+  <div class="bar"><label><input id="sendToDesktop" type="checkbox" checked disabled> 默认交给 Electron 桌面端识别</label></div>
+  <p class="note">首次配对后，浏览器会在本机保存配对信息并自动重连。搜图完成后先检查候选，点击“确认候选并开始识别”才提交桌面任务。原图和候选图保存在本机任务目录；模型在线推理，Key 只在 Electron 进程内存中设置。</p>
+</details>
+<div class="bar" id="platformChoices"><label><input type="checkbox" value="wsy" checked>网商园</label><label><input type="checkbox" value="qcc" checked>青创网</label><label><input type="checkbox" value="zwd" checked>17网</label><label><input type="checkbox" value="e3hui" checked>衣衫汇</label><span class="note">默认搜索四个平台；可取消不需要的站点。完成后显示各站候选数和平台报告总数。</span></div>
+<section id="input">
+  <div class="bar"><label><input type="radio" name="mode" value="select" checked> 一张图选供应商</label><label><input type="radio" name="mode" value="optimize"> 已有成本，找低价商品</label></div>
+  <div class="bar"><label>款号（可选）<input id="goodsId" placeholder="只辅助排序"></label><div id="costFields" hidden><label>当前成本（元）<input id="baseline" type="number" min="0.01" step="0.01"></label><label>至少省（元）<input id="reduction" type="number" min="0" step="0.01" value="5"></label></div></div>
+  <div class="bar" id="dropZone" tabindex="0"><button id="pick">选图并搜索</button><input id="file" type="file" accept="image/*" hidden><button id="pickMany">批量添加图片</button><input id="files" type="file" accept="image/*" multiple hidden><span class="note">多图可拖入或批量添加，每组最多10张；每张图独立搜图和审核。</span><img id="sourceImage" hidden alt="当前搜索图"><button id="search" disabled>重新搜索当前图</button><button id="stopSearch" disabled>停止并保留结果</button><button id="reset">重置当前图</button></div>
+</section>
+<section id="queryWorkspace" hidden aria-labelledby="queryHeading">
+  <div class="connection-heading"><h2 id="queryHeading">图片队列</h2><div class="connection-actions"><button id="removeQuery">移除当前图片</button><button id="clearQueries">清空图片队列</button></div></div>
+  <p id="queryProgress" role="status"></p><div id="queryList" aria-label="切换商品图片"></div>
+  <div class="bar"><button id="searchQueries">依次搜索未搜索图片</button><button id="compareQueries">确认全部待识别图片</button><button id="stopQueries" hidden>暂停队列</button></div>
+  <p class="note">逐张搜索，完成后先检查候选。确认识别会使用模型并可能计费；已识别或已交桌面的候选不重复提交。</p>
+  <strong id="queryName"></strong>
+</section>
+<p id="queryNotice" role="status" hidden></p>
+<details id="visionSettings">
+  <summary>视觉大模型设置 · <span id="visionStatus">正在检查配置…</span></summary>
+  <div class="bar"><span>接口：阿里云百炼标准 API</span><label>模型<select id="visionModel"><option value="qwen3.7-plus">qwen3.7-plus</option><option value="qwen3.6-plus">qwen3.6-plus</option></select></label></div>
+  <div class="bar"><label>API Key <input id="visionKey" type="password" autocomplete="off" spellcheck="false" placeholder="仅当前浏览器会话保存"></label><button id="saveVision">保存模型设置</button><button id="forgetVision">清除 Key</button></div>
+  <p class="note">每批将原图与最多 4 张候选图发送至阿里云百炼标准 API，模型按领口、袖型、图案等细节逐张比对。Key 仅保存在扩展受限会话存储中，重启浏览器后需重新填写。Coding Plan Key 不支持自定义应用 API 调用。</p>
+</details>
+<div class="bar"><button id="compareAgain" disabled>确认候选并开始识别</button><span class="note">搜图只获取候选，不调用模型；检查候选后再点击，已完成识别的商品不会重复调用模型。</span></div>
+<p id="status" role="status" aria-live="polite">请提供一张商品图片。无成本时不做价格淘汰。</p>
+<p id="storageNotice" role="alert" hidden></p>
+<section id="reviewSettings"><div class="bar"><label>结果模式 <select id="reviewMode"><option value="manual">人工审核（前期推荐）</option><option value="direct">模型建议（暂定）</option></select></label><label>查看 <select id="reviewFilter"><option value="all">全部候选</option><option value="pending">待人工审核</option><option value="final">人工或暂定结论</option><option value="excluded">已排除</option></select></label><button id="reviewNext" disabled>审核下一条</button></div><p class="note">搜图 → 模型分批比较 → 人工确认款式。模型建议与人工确认分开记录；切换模式不重新调用模型。</p><p id="reviewSummary" role="status"></p></section>
+<p id="summary"></p><p id="empty">尚未搜索。</p>
+<div class="table-wrap"><table id="results" hidden><thead><tr><th>商品图</th><th>款号 / 标题</th><th>采购价</th><th>节省</th><th>图像判断</th><th>供应商 / ID</th><th>站点</th><th>详情</th></tr></thead><tbody></tbody></table></div>
+<button id="showAll" hidden>显示其余候选</button>
+<details id="excluded"><summary>淘汰明细 <span id="excludedCount">0</span></summary><div id="excludedRows"></div></details>
+<p class="note">大模型按可见细节判断疑似同款、相似款、明显不同或无法判断，并显示吻合点、差异和看不清的细节。按批次最高分动态排除低分候选；疑似同款优先，再看相似款和无法判断，同类按分数降序。匹配分不是同款概率；调用失败会明确显示“未完成识别”。价格为平台采购价，未包含运费等额外成本。</p>
+<p class="note">浏览器默认连接 Electron 本地桌面端；首次复制长期配对码连接一次，之后自动恢复。配对信息保存在此浏览器扩展的本机存储中，清除扩展数据后需重新配对。衣衫汇不需要支持站内粘贴：扩展会把图片封装成 <code>file</code> 并通过平台上传接口提交。青创网若返回 <code>-10001</code>，扩展会自动暂停后续重复请求；额度恢复后可重新勾选。</p>
+<p>各平台需要自己的登录和搜图权限。失败会显示具体阶段，不能视为没有商品。衣衫汇结果卡与青创网登录后模板需真实响应验收。</p>
+<details><summary>本次诊断</summary><pre id="diagnostics"></pre></details>
+</main><script src="review.js"></script><script src="review-ui.js"></script><script src="core.js"></script><script src="platform-page.js"></script><script src="transport.js"></script><script src="connection-check.js"></script><script src="similarity.js"></script><script src="vision-protocol.js"></script><script src="image-policy.js"></script><script src="vision-queue.js"></script><script src="vision-client.js"></script><script src="query-store.js"></script><script src="query-workspace.js"></script><script src="workbench.js"></script></body></html>

@@ -1,0 +1,104 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
+const {_electron}=require('playwright');
+const {startFetchSafeServer}=require('../test/http-fixture');
+const root=path.resolve(__dirname,'..');
+
+test('Electron 共享表真实接口：错误恢复、新增编辑、历史详情、删除确认和安全回档',{timeout:65000},async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'pc-online-table-'));let app,service;
+  t.after(async()=>{await app?.close();await service?.close();await fs.rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+  const {createOnlineTableServer}=await import('../table-server/server.mjs');
+  service=createOnlineTableServer({port:0,dataDir:path.join(dir,'tables'),authUrl:'https://fixture.test/me',fetchImpl:async(_url,options)=>Response.json({user:{id:options.headers.Authorization.endsWith('buyer')?'buyer':'admin',displayName:'测试操作人',isAdmin:!options.headers.Authorization.endsWith('buyer')}}),logger:{error(){}}});
+  const origin=await startFetchSafeServer(service);
+  const bootstrap=path.join(dir,'main.cjs');
+  await fs.writeFile(bootstrap,`const{app}=require('electron');app.setPath('userData',${JSON.stringify(path.join(dir,'profile'))});require(${JSON.stringify(path.join(root,'desktop/main.js'))});`);
+  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+  const executable=process.env.PC_QA_EXECUTABLE||path.join(root,'desktop/node_modules/electron/dist/electron.exe');
+  app=await _electron.launch({executablePath:executable,args:process.env.PC_QA_EXECUTABLE?[`--user-data-dir=${path.join(dir,'profile')}`]:[bootstrap],env});
+  const page=await app.firstWindow(),errors=[];page.on('pageerror',error=>errors.push(error.message));
+  await app.evaluate(({dialog},origin)=>{
+    globalThis.tableFixture={fail:true,confirm:0,dialogs:[],user:'admin'};
+    const actual=globalThis.fetch;
+    globalThis.fetch=async(url,options={})=>{
+      const target=String(url);
+      if(target.startsWith('https://wsfile.cn/maishou/api/online-table')){
+        if(tableFixture.fail)throw Object.assign(new Error('fixture network failure'),{cause:{code:'ENOTFOUND'}});
+        return actual(target.replace('https://wsfile.cn/maishou/api/online-table',origin),options);
+      }
+      if(target.startsWith('https://wsfile.cn/myladmin/api/auth/')){
+        const user={id:tableFixture.user,username:tableFixture.user,displayName:'测试操作人',isAdmin:tableFixture.user==='admin'};
+        return Response.json(target.endsWith('/login')?{token:tableFixture.user,expiresAt:new Date(Date.now()+3600000).toISOString(),user}:{user,ok:true});
+      }
+      if(target.includes('/api/erp/'))return Response.json({ok:true,configured:false,reason:'尚未配置互拓账号'});
+      throw new Error('测试不允许其他网络访问');
+    };
+    dialog.showMessageBox=async(_window,options)=>{tableFixture.dialogs.push(options);return{response:tableFixture.confirm};};
+  },origin);
+  await page.locator('#username').fill('admin');await page.locator('#password').fill('fixture');await page.locator('#loginButton').click();await page.locator('#appShell').waitFor({state:'visible'});
+  await page.waitForFunction(()=>document.querySelector('#onlineTableMessage').textContent.includes('域名'));
+  assert.equal(await page.locator('#onlineTableCreate').isVisible(),false);
+  await app.evaluate(()=>{tableFixture.fail=false;});await page.locator('#onlineTableConnect').click();await page.locator('#onlineTableCreate').waitFor({state:'visible'});
+  assert.equal(await page.locator('#onlineTableMessage').textContent().then(text=>text.includes('域名')),false);
+  await page.locator('#onlineTableCreate').click();await page.locator('#onlineTableCreate').waitFor({state:'hidden'});
+  await page.locator('#onlineTableAddRow').click();const blank=page.locator('#onlineTableGrid tbody tr.online-new-row').first();await blank.locator('[data-field=articleNo]').fill('QA-01');await blank.locator('[data-field=sourceUrl]').fill('https://item.taobao.com/item.htm?id=12345678');await blank.locator('[data-field=title]').fill('原始标题');await blank.locator('[data-field=note]').fill('原始备注');
+  await blank.locator('.online-details-row').click();await page.locator('#onlineAddRowForm summary').click();await page.locator('#onlineField_selectDate').fill('11.6');await page.locator('#onlineField_tableId').fill('07');await page.locator('#onlineField_externalCode').fill('运营编码');
+  await page.locator('#onlineAddRowForm button[type=submit]').click();await page.locator('#onlineAddRowDialog').waitFor({state:'hidden'});
+  const rows=page.locator('#onlineTableGrid tbody tr[data-online-row]:not(.online-new-row)');await rows.waitFor();
+  await rows.locator('.online-details-row').click();assert.equal(await page.locator('#onlineField_tableId').inputValue(),'07');await page.locator('#onlineField_warehouse').fill('广州仓');await page.locator('#onlineAddRowForm button[type=submit]').click();await page.locator('#onlineAddRowDialog').waitFor({state:'hidden'});
+  await rows.locator('[data-field=title]').fill('修改标题');await rows.locator('[data-field=note]').fill('修改备注');await page.locator('#onlineTableConnect').click();
+  assert.equal(await rows.locator('[data-field=title]').inputValue(),'修改标题','刷新不能抹掉未保存输入');
+  await rows.locator('.online-save-row').click();await page.waitForFunction(()=>document.querySelector('#onlineTableMessage').textContent.includes('已保存'));
+  await page.locator('#onlineTableSearch').fill('修改标题');await page.locator('#onlineTableSearchButton').click();await page.waitForFunction(()=>document.querySelector('#onlineTableSearchStatus').textContent.includes('1 / 1'));assert.equal(await page.locator('#onlineTableGrid tr.online-found').count(),1);
+  await page.locator('#onlineTableHistory').click();await page.locator('#onlineHistoryDialog').waitFor({state:'visible'});
+  await page.locator('.online-history-detail').first().click();assert.match(await page.locator('#onlineHistoryDetails').textContent(),/原始标题.*修改标题/s);
+  await page.locator('#onlineHistoryClose').click();await rows.locator('.online-delete-row').click();
+  assert.equal(await rows.count(),1,'取消删除保留行');
+  await app.evaluate(()=>{tableFixture.confirm=1;});await rows.locator('.online-delete-row').click();await page.waitForFunction(()=>!document.querySelector('#onlineTableGrid tr[data-online-row]:not(.online-new-row)'));
+  await page.locator('#onlineTableHistory').click();await page.locator('.online-history-rollback').first().click();await page.locator('#onlineHistoryDialog').waitFor({state:'hidden'});assert.equal(await rows.count(),1);assert.equal(await rows.locator('[data-field=title]').inputValue(),'修改标题');
+  const dialogs=await app.evaluate(()=>tableFixture.dialogs);assert.match(dialogs.at(-1).detail,/找回 1 行/);assert.match(dialogs.at(-1).detail,/不会回退/);
+  await rows.locator('.online-details-row').click();assert.equal(await page.locator('#onlineField_selectDate').inputValue(),'11.6');assert.equal(await page.locator('#onlineField_warehouse').inputValue(),'广州仓');await page.locator('#onlineAddCancel').click();
+  await rows.locator('.online-approve-row').click();await page.waitForFunction(()=>document.querySelector('#onlineTableMessage').textContent.includes('尚未连接互拓'));assert.match(await rows.textContent(),/待确认/,'互拓未配置时不能先提交表格确认');
+  await fs.mkdir(path.join(root,'output/playwright'),{recursive:true});await page.screenshot({path:path.join(root,'output/playwright/online-table-restored.png')});
+  await page.locator('#onlineTableHistory').click();await page.screenshot({path:path.join(root,'output/playwright/online-table-history.png')});await page.locator('#onlineHistoryClose').click();
+  await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(900,700));assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  await rows.locator('[data-field=title]').fill('未保存草稿');
+  const httpOptions={headers:{Authorization:'Bearer admin','Content-Type':'application/json'}};
+  const table=(await(await fetch(origin+'/api/tables',httpOptions)).json()).tables[0];
+  const remote=(await(await fetch(origin+`/api/tables/${table.id}`,httpOptions)).json()).rows[0];
+  await fetch(origin+`/api/tables/${table.id}/rows/${remote.id}`,{...httpOptions,method:'DELETE',body:JSON.stringify({ifVersion:remote.version})});
+  await page.locator('#onlineTableConnect').click();assert.equal(await rows.locator('[data-field=title]').inputValue(),'未保存草稿','他人删除时也保留本机未保存输入');
+  await rows.locator('.online-save-row').click();await page.waitForFunction(()=>document.querySelector('#onlineTableMessage').textContent.includes('其他人删除'));
+  await rows.locator('.online-cancel-row').click();await page.waitForFunction(()=>!document.querySelector('#onlineTableGrid tr[data-online-row]:not(.online-new-row)'));
+  await page.locator('#onlineTableHistory').click();await page.locator('.online-history-rollback').first().click();await page.locator('#onlineHistoryDialog').waitFor({state:'hidden'});await rows.waitFor();
+  await page.locator('#logout').click();await page.locator('#loginButton').waitFor({state:'visible'});await app.evaluate(()=>{tableFixture.user='buyer';});
+  await page.locator('#username').fill('buyer');await page.locator('#password').fill('fixture');await page.locator('#loginButton').click();await rows.waitFor();
+  assert.equal(await page.locator('#onlineTableCreate').isVisible(),false);
+  await page.locator('#onlineTableHistory').click();await page.locator('#onlineHistoryDialog').waitFor({state:'visible'});assert.equal(await page.locator('.online-history-rollback').count(),0);assert.ok(await page.locator('.online-history-detail').count()>0);await page.locator('#onlineHistoryClose').click();
+  const savedRows=page.locator('#onlineTableGrid tr[data-online-row]:not(.online-new-row)'),newRows=page.locator('#onlineTableGrid tr.online-new-row');
+  assert.ok(await newRows.count()>=12,'打开表格直接提供空白行');
+  await newRows.first().locator('[data-field=note]').fill('先记备注，链接稍后补');await newRows.first().locator('.online-save-row').click();
+  await page.waitForFunction(()=>document.querySelector('#onlineTablePageInfo').textContent.includes('已保存 2 行'));
+  assert.match(await page.locator('#onlineTablePageInfo').textContent(),/商品 1 件/);
+  const noteRow=savedRows.filter({has:page.locator('input[data-field=note][value="先记备注，链接稍后补"]')});
+  assert.equal(await noteRow.locator('.online-approve-row').count(),0);
+  await noteRow.locator('[data-field=sourceUrl]').fill('链接待补');await noteRow.locator('.online-save-row').click();await page.waitForFunction(()=>document.querySelector('#onlineTablePageInfo').textContent.includes('商品 2 件'));
+  await noteRow.locator('[data-field=sourceUrl]').fill('');await noteRow.locator('.online-save-row').click();await page.waitForFunction(()=>document.querySelector('#onlineTablePageInfo').textContent.includes('商品 1 件'));
+  await newRows.nth(2).locator('[data-field=title]').fill('保留前两行空白');await newRows.nth(2).locator('.online-save-row').click();await page.waitForFunction(()=>document.querySelector('#onlineTablePageInfo').textContent.includes('已保存 5 行'));
+  assert.equal(await savedRows.nth(4).getAttribute('data-position'),'5');assert.equal(await savedRows.nth(4).locator('[data-field=title]').inputValue(),'保留前两行空白');
+  const beforeBlankCount=await newRows.count();await newRows.last().locator('[data-field=title]').focus();assert.ok(await newRows.count()>beforeBlankCount,'聚焦末尾继续增加空白行');
+  await newRows.first().locator('[data-field=articleNo]').evaluate(input=>{const data=new DataTransfer();data.setData('text/plain','P-1\thttps://v.douyin.com/test/\t粘贴商品\t证据待核对\nP-2\t\t粘贴备注\t不计为商品');input.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:data}));});
+  await page.locator('#onlineTableSaveAll').click();await page.waitForFunction(()=>document.querySelector('#onlineTablePageInfo').textContent.includes('已保存 7 行'));
+  assert.match(await page.locator('#onlineTablePageInfo').textContent(),/商品 2 件/);assert.equal(await savedRows.nth(5).locator('[data-field=articleNo]').inputValue(),'P-1');assert.equal(await savedRows.nth(6).locator('[data-field=title]').inputValue(),'粘贴备注');
+  const bulk=await page.evaluate(()=>window.desktop.importOnlineTableRows(Array.from({length:120},(_,index)=>({title:index===2||index===119?'跨页验收标题':`占位 ${index}`}))));
+  await page.locator('#onlineTableConnect').click();await page.locator('#onlineTableSearch').fill('跨页验收标题');await page.locator('#onlineTableSearchButton').click();await page.waitForFunction(()=>document.querySelector('#onlineTableSearchStatus').textContent.includes('1 / 2'));
+  assert.equal(await page.locator('#onlineTableGrid tr.online-found').getAttribute('data-online-row'),bulk.rows[2].id);
+  await page.locator('#onlineTableSearchNext').click();await page.waitForFunction(()=>document.querySelector('#onlineTableSearchStatus').textContent.includes('2 / 2'));
+  assert.equal(await page.locator('#onlineTableGrid tr.online-found').getAttribute('data-online-row'),bulk.rows[119].id);
+  await page.locator('#onlineTableSearchPrev').click();await page.waitForFunction(()=>document.querySelector('#onlineTableSearchStatus').textContent.includes('1 / 2'));
+  await page.locator('#onlineTableGoRow').fill(String(bulk.rows[100].position));await page.locator('#onlineTableGoButton').click();await page.waitForFunction(position=>document.querySelector('#onlineTableGrid tr.online-found')?.dataset.position===String(position),bulk.rows[100].position);
+  await page.locator('#onlineTableSearch').fill('没有这个验收内容');await page.locator('#onlineTableSearchButton').click();await page.waitForFunction(()=>document.querySelector('#onlineTableSearchStatus').textContent==='未找到匹配内容');
+  assert.equal(await page.locator('#onlineTableSearchNext').isDisabled(),true);
+  await page.locator('#onlineTableSearchClear').click();await page.locator('#onlineTableSearch').fill('跨页验收标题');await page.locator('#onlineTableSearchButton').click();await page.waitForFunction(()=>document.querySelector('#onlineTableSearchStatus').textContent.includes('1 / 2'));
+  await page.screenshot({path:path.join(root,'output/playwright/online-table-v4-search-packaged.png')});
+  assert.deepEqual(errors,[]);
+});
+

@@ -1,0 +1,3 @@
+const test=require('node:test');const assert=require('node:assert/strict');
+test('托管互拓客户端只把 TDL token 发给服务端代理，不尝试本机 OAuth',async()=>{
+  const {ErpClient}=await import('../desktop/erp/client.mjs');let call=null;const client=new ErpClient({erpManaged:true,erpBaseUrl:'https://wsfile.cn/maishou/api',erpTenantId:'managed',erpToken:'tdl-token'},{fetchImpl:async(url,options)=>{call={url,options};return Response.json({code:0,data:[{categoryName:'衬衫',status:1}]});}});const result=await client.categories();assert.deepEqual(result,[{categoryName:'衬衫',status:1}]);assert.equal(call.url,'https://wsfile.cn/maishou/api/erp/category/list');assert.equal(call.options.headers.Authorization,'Bearer tdl-token');assert.equal(call.options.headers['tenant-id'],undefined);});

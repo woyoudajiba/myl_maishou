@@ -1,0 +1,65 @@
+{
+  "manifest_version": 3,
+  "name": "找商品 · 精简工作台",
+  "version": "26.11.10.1",
+  "version_name": "26.11.10-v1",
+  "description": "抖音商品主图搜索四个平台，人工确认同款后采集供应商页面资料。",
+  "action": {
+    "default_title": "打开找商品工作台"
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting",
+    "alarms",
+    "cookies",
+    "declarativeNetRequest"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "host_permissions": [
+    "https://www.wsy.com/*",
+    "https://wsy.com/*",
+    "https://*.wsy.com/*",
+    "https://stu.17zwd.com/*",
+    "https://*.17zwd.com/*",
+    "https://*.17qcc.com/*",
+    "https://*.17zwd.com/*",
+    "https://*.e3hui.com/*",
+    "https://*.e3hui.cn/*",
+    "https://e3h.i.ximgs.net/*",
+    "https://aodo.i.ximgs.net/*",
+    "https://www.taobao.com/*",
+    "https://*.taobao.com/*",
+    "https://*.tmall.com/*",
+    "https://h5api.m.taobao.com/*",
+    "https://*.alicdn.com/*",
+    "https://*.tbcdn.cn/*",
+    "https://*.taobaocdn.com/*",
+    "https://dashscope.aliyuncs.com/*",
+    "https://huggingface.co/*",
+    "https://*.huggingface.co/*",
+    "https://*.hf.co/*",
+    "http://127.0.0.1/*",
+    "https://*.douyin.com/*",
+    "https://*.jinritemai.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.wsy.com/*",
+        "https://wsy.com/*"
+      ],
+      "js": [
+        "core.js",
+        "wsy-http.js",
+        "wsy-bridge.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

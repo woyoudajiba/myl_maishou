@@ -1,0 +1,12 @@
+node_modules/
+.playwright-cli/
+.cache/
+test-results/
+playwright-report/
+output/
+desktop/release/
+desktop/.build-app/
+.env
+.env.*
+!.env.example
+table-server/data/
