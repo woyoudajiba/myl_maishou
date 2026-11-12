@@ -3,6 +3,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
+const { checkDirectory, checkAsar } = require('./check-package-dependencies');
 
 const root = path.resolve(__dirname, '..');
 const desktopDir = path.join(root, 'desktop');
@@ -104,7 +105,7 @@ async function main() {
   const stagedDesktop = path.join(appStage, 'desktop');
   fs.mkdirSync(stagedDesktop, { recursive: true });
   fs.writeFileSync(path.join(appStage, '.codex-release-stage'), releaseMarker, 'utf8');
-  for (const file of ['main.js', 'updates.js', 'updates-renderer.js', 'douyin.js', 'douyin-renderer.js', 'buyer-renderer.js','buyer-auto-renderer.js','buyer-import.js','buyer-engine.js','buyer-settings.js','online-table-client.js','buyer-providers.js','buyer-evidence.js','buyer-files.js','buyer-preview.js', 'extension.js', 'help-renderer.js', 'accounts.js', 'platform-accounts.js', 'buyer-workflow.js', 'buyer-source.js', 'pairing.js', 'models.js', 'images.js', 'comparison.js', 'bridge-server.js', 'preload.js', 'renderer.js', 'index.html', 'style.css']) {
+  for (const file of ['main.js', 'updates.js', 'updates-renderer.js', 'douyin.js', 'douyin-renderer.js', 'buyer-renderer.js','buyer-auto-renderer.js','buyer-import.js','buyer-engine.js','buyer-settings.js','online-table-client.js','online-task-binding.js','buyer-providers.js','buyer-evidence.js','buyer-files.js','buyer-preview.js','model-retry.js', 'extension.js', 'help-renderer.js', 'accounts.js', 'platform-accounts.js', 'buyer-workflow.js', 'buyer-source.js', 'pairing.js', 'models.js', 'images.js', 'comparison.js', 'bridge-server.js', 'preload.js', 'renderer.js', 'index.html', 'style.css']) {
     fs.copyFileSync(path.join(desktopDir, file), path.join(stagedDesktop, file));
   }
   fs.mkdirSync(path.join(stagedDesktop,'erp'),{recursive:true});
@@ -119,6 +120,7 @@ async function main() {
     name: 'product-comparison-desktop', version: updateVersion, productName: '找商品', main: 'desktop/main.js',
     description: '找商品本地桌面端', author: 'Product Comparison', dependencies: { ...require('../desktop/package.json').dependencies }
   }, null, 2), 'utf8');
+  console.log('Staged runtime dependencies:', checkDirectory(appStage));
 
   const extensionStage = path.join(releaseDir, extensionName);
   remove(extensionStage);
@@ -144,9 +146,15 @@ async function main() {
 
   const installer = `ProductComparison-${updateVersion}-x64.exe`;
   if (!fs.existsSync(path.join(releaseDir, installer))) throw new Error('electron-builder 未生成 NSIS 安装器');
+  const unpackedDir = path.join(releaseDir, 'win-unpacked');
+  const archive = path.join(unpackedDir, 'resources', 'app.asar');
+  console.log('Packaged runtime dependencies:', checkAsar(archive));
+  const smokeDir = path.join(root, 'output', 'qa', `release-${version}`, 'startup');
+  const smoke = spawnSync(process.execPath, [path.join(__dirname, 'check-packaged-startup.js'), path.join(unpackedDir, 'ProductComparison.exe'), smokeDir],
+    { stdio: 'inherit', windowsHide: true, timeout: 60000 });
+  if (smoke.status !== 0) throw new Error(`打包EXE启动验收失败，停止交付：${smoke.error?.message || smoke.status}`);
   const installerTarget = path.join(desktopTarget, `${desktopName}-Installer.exe`);
   deliverFile(path.join(releaseDir, installer), installerTarget);
-  const unpackedDir = path.join(releaseDir, 'win-unpacked');
   if (!fs.existsSync(path.join(unpackedDir, 'ProductComparison.exe'))) throw new Error('Windows 解包目录缺少桌面程序');
   const portableZip = path.join(desktopTarget, `${desktopName}-Portable.zip`);
   deliverArchive(unpackedDir, portableZip);
@@ -184,7 +192,7 @@ async function main() {
     '10. 自动买手可导入 XLSX、CSV、TSV，每行一个商品链接，单批及本机任务总量最多500件。分享文案会自动提取链接；正常商品自动排队，异常商品单独进入待处理。也可用辅助工具批量导入最多50张商品图。',
     '11. 淘宝需在加载找商品插件的同一浏览器登录。安全验证会暂停淘宝队列；完成验证后继续，失败项可单独重试。买手工作台首先导入运营链接；自动任务和例外在同页追踪，识别记录用于查看比对和审核，抖音主图是可选的辅助输入。',
     '12. 第一阶段未推进时，查看商品卡片或详情中的原因及处理按钮。客户端会提示插件未连接、版本待确认、需要更新或页面采集超时。更新插件文件后必须在浏览器扩展管理页点击重新加载，再重新打开插件工作台。第二阶段找供应商时可逐张查看商品链接图集和候选详情图；人工确认同款后可以直接继续下一步，也可跳转到识别与复核查看模型细节，跳转会定位到相似度最高的候选。',
-    '13. 买手任务可在录入表中点击“查看本机任务”继续；另一台电脑留下的供应商搜索/比对异常可点“本机重新开始”，使用本机浏览器登录状态重新读取商品页。其他阶段不允许跨设备接管；互拓提交中的任务必须回原处理电脑核对，避免重复建商品。队列暂停后点击“继续”，当前没有一键批量重试异常商品。',
+    '13. 点击表格商品行的行号、状态、只读字段或空白处，可查看该商品的流程详情；编辑标题和备注仍在单元格内进行。流程顶部显示主图和当前步骤，关闭、返回表格以及图片、平台、资料、记录导航始终可用。另一台电脑的流程只读查看，供应商搜索/比对异常可点“本机重新开始”；互拓提交中的任务必须回原处理电脑核对，避免重复建商品。队列暂停后点击“继续”，当前没有一键批量重试异常商品。',
     '',
     `本机已经解压好的插件目录：${unpackedTarget}`,
     'TDL密码不会保存；记住登录、平台账号及模型Key使用当前Windows用户的系统安全存储加密。',
@@ -205,6 +213,12 @@ async function main() {
     throw new Error(`桌面上已有非本次构建的校验文件，已保留：${checksumFile}`);
   }
   await fsp.writeFile(checksumFile, `${releaseMarker}\n${lines.join('\n')}\n`, 'utf8');
+  const startup = JSON.parse(fs.readFileSync(path.join(smokeDir, 'packaged-startup.json'), 'utf8'));
+  fs.writeFileSync(path.join(releaseDir, `verified-${version}.json`), JSON.stringify({
+    version, updateVersion, installerSha256: sha256(path.join(releaseDir, installer)),
+    extensionSha256: sha256(path.join(releaseDir, `${extensionName}.zip`)),
+    appAsarSha256: sha256(archive), metadataSha256: sha256(path.join(releaseDir, 'latest.yml')), startup
+  }, null, 2));
   console.log(JSON.stringify({ version, desktopTarget, delivered, extensionFolder: unpackedTarget }, null, 2));
   remove(stageDir);
 }

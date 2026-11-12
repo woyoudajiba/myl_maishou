@@ -3,20 +3,24 @@
 async function searchPlatformPage(platform, base64, requestId) {
   const jobs = window.__findPlatformJobs ||= {};
   if (Object.keys(jobs).length) return { ok: false, requestId, error: 'request_busy：此页面已有请求' };
-  const job = { cancelled: false, aborts: [] }; jobs[requestId] = job;
+  const job = { cancelled: false, aborts: [], cleanups: [] }; jobs[requestId] = job;
+  job.cancel=()=>{job.cancelled=true;job.aborts.forEach(fn=>{try{fn();}catch{}});job.cleanups.forEach(fn=>{try{fn();}catch{}});job.cancelWait?.();};
   const startedAt = Date.now();
   const diagnostics = { platform, page: location.origin + location.pathname, stage: 'page_ready', retryable: false };
   const check = () => { if (job.cancelled) throw new Error('request_cancelled：请求已取消'); };
-  const bounded = promise => new Promise((resolve, reject) => {
+  const bounded = (promise, timeoutMs = 25000) => new Promise((resolve, reject) => {
+    const cancelWait=()=>{clearTimeout(timer);reject(new Error('request_cancelled：请求已取消'));};
+    job.cancelWait=cancelWait;
     const timer = setTimeout(() => {
       job.cancelled = true; job.aborts.forEach(fn => fn());
       diagnostics.timeoutStage = diagnostics.stage;
       diagnostics.failureKind = 'timeout';
       diagnostics.retryable = platform!=='qcc'||!['image_upload','image_search'].includes(diagnostics.stage);
       const requestName=platform==='qcc'&&diagnostics.stage==='image_search'?'青创网搜图回调':platform==='qcc'&&diagnostics.stage==='image_upload'?'青创网图片上传':`${platform}平台请求`;
-      reject(new Error(`platform_timeout：${requestName}等待 25 秒超时；${diagnostics.retryable?'可重试':'请求可能已被平台接收，不自动重发以避免重复消耗额度'}`));
-    }, 25000);
-    Promise.resolve(promise).then(x => { clearTimeout(timer); try { check(); resolve(x); } catch (e) { reject(e); } }, e => { clearTimeout(timer); reject(e); });
+      reject(new Error(`platform_timeout：${requestName}等待 ${timeoutMs/1000} 秒超时；${diagnostics.retryable?'可重试':'请求可能已被平台接收，不自动重发以避免重复消耗额度'}`));
+    }, timeoutMs);
+    const clear=()=>{clearTimeout(timer);if(job.cancelWait===cancelWait)job.cancelWait=null;};
+    Promise.resolve(promise).then(x => { clear(); try { check(); resolve(x); } catch (e) { reject(e); } }, e => { clear(); reject(e); });
   });
   const url = (v, base = location.href) => { try { if (!v) return ''; const u = new URL(v, base); return /^https?:$/.test(u.protocol) ? u.href : ''; } catch { return ''; } };
   const dataUrlBlob = value => {
@@ -204,21 +208,52 @@ async function searchPlatformPage(platform, base64, requestId) {
       let path = uploaded?.Result?.FileFullPath;
       if (!path) throw new Error(`platform_upload：青创网未返回图片路径；${String(uploaded?.Error?.Message || '').slice(0,120)}`);
       path = path.split('?')[0].replace(/^https:\/\/pics\.17qcc\.com/, ''); check();
-      diagnostics.stage = 'image_search'; const response = await bounded(new Promise((resolve, reject) => {
+      diagnostics.stage = 'image_search'; diagnostics.searchWaitMs = 45000;
+      const response = await bounded(new Promise((resolve, reject) => {
         let settled = false;
+        let stopWatching = () => {};
         const finish = (value, source = 'native_callback') => {
-          if (!settled) { settled = true; diagnostics.searchCallbackSource = source; resolve(value); }
+          if (!settled && !job.cancelled) { settled = true; stopWatching(); diagnostics.searchCallbackSource = source; resolve(value); }
         };
         const fail = (request, status, error) => {
-          if (settled) return;
+          if (settled || job.cancelled) return;
           settled = true;
+          stopWatching();
           const code = Number(request?.status) || 0;
           diagnostics.httpStatus = code;
           diagnostics.httpStatusText = String(request?.statusText || status || error || '').slice(0, 80);
           reject(new Error(`platform_http：青创网搜图请求失败${code ? `（HTTP ${code}）` : '（HTTP 0，可能是网络或登录态）'}`));
         };
+        // Some native helper versions consume their callback and return no jqXHR.
+        // Observe this same request; never issue a second search to recover it.
+        const endpoint = '/api/services/app/ImgSearch/GetProductListByImg';
+        if (typeof window.jQuery === 'function') {
+          const events = window.jQuery(document), namespace = '.findQcc' + requestId.replace(/[^a-z0-9]/gi, '');
+          const matching = settings => {
+            try {
+              const requestUrl = new URL(settings?.url || '', location.href);
+              if (requestUrl.origin !== location.origin || requestUrl.pathname !== endpoint) return false;
+              const data = settings.data;
+              if(typeof data!=='string')return data?.ImgUrl===path;
+              try{if(JSON.parse(data)?.ImgUrl===path)return true;}catch{}
+              return new URLSearchParams(data).get('ImgUrl') === path;
+            } catch { return false; }
+          };
+          if (typeof events.on === 'function' && typeof events.off === 'function') {
+            events.on('ajaxComplete' + namespace, (_event, request, settings) => {
+              if (!matching(settings)) return;
+              if (request.status >= 200 && request.status < 300) {
+                let value = request.responseJSON;
+                if (!value) try { value = JSON.parse(request.responseText); } catch {}
+                if (value && typeof value.Success === 'boolean') finish(value, 'same_request.ajaxComplete');
+              } else fail(request, request.statusText);
+            });
+            stopWatching = () => events.off(namespace);
+            job.cleanups.push(stopWatching);
+          }
+        }
         let xhr;
-        try { xhr = window.jQuery.qccAjax('/api/services/app/ImgSearch/GetProductListByImg', { ImgUrl: path, ImgSearchChannel: pageConfig.ImgSearchChannel }, finish, { mustLogin: true }); }
+        try { xhr = window.jQuery.qccAjax(endpoint, { ImgUrl: path, ImgSearchChannel: pageConfig.ImgSearchChannel }, finish, { mustLogin: true, timeout: 45000 }); }
         catch (error) { fail(null, 'exception', error.message); return; }
         diagnostics.requestReturnType = typeof xhr;
         diagnostics.requestHasDone = typeof xhr?.done === 'function';
@@ -230,7 +265,7 @@ async function searchPlatformPage(platform, base64, requestId) {
         }
         else if (xhr?.then) xhr.then(value => finish(value, 'Promise.then'), fail);
         if (xhr?.abort) job.aborts.push(() => xhr.abort());
-      }));
+      }), 45000);
       diagnostics.searchResponseKeys = response && typeof response === 'object' ? Object.keys(response).sort().slice(0,40) : [];
       diagnostics.resultType = response?.Result == null ? String(response?.Result) : Array.isArray(response.Result) ? 'array' : typeof response.Result;
       diagnostics.resultKeys = response?.Result && typeof response.Result === 'object' && !Array.isArray(response.Result) ? Object.keys(response.Result).sort().slice(0,80) : [];
@@ -336,5 +371,5 @@ async function searchPlatformPage(platform, base64, requestId) {
     } else throw new Error('platform_input：未知平台');
     check(); diagnostics.stage = partial ? 'partial' : 'complete'; return { ok: true, requestId, items, total, received: items.length, partial, diagnostics };
   } catch (error) { diagnostics.elapsedMs=Date.now()-startedAt;return { ok: false, requestId, error: String(error.message || error).slice(0,300), diagnostics }; }
-  finally { delete jobs[requestId]; }
+  finally { job.cleanups.forEach(fn => { try { fn(); } catch {} }); delete jobs[requestId]; }
 }

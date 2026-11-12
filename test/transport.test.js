@@ -258,7 +258,7 @@ test('平台脚本无响应时总超时、清理临时页并释放批次锁',asy
       if(hang)return new Promise(()=>{});
       return[{result:{ok:true,requestId:args[2],items:[{id:'recovered'}],total:1}}];
     }}};
-  const source=fs.readFileSync(path.join(__dirname,'../transport.js'),'utf8').replace('const batchTimeout = 75000;','const batchTimeout = 20;');
+  const source=fs.readFileSync(path.join(__dirname,'../transport.js'),'utf8').replace('const batchTimeout = 110000;','const batchTimeout = 20;');
   const context=vm.createContext({chrome,setTimeout,clearTimeout,searchPlatformPage:function(){}});
   vm.runInContext(source,context);
   await assert.rejects(context.FindTransport.searchAll('data:image/jpeg;base64,AAAA','hung',['zwd'],()=>{}),/search_timeout/);

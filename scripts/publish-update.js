@@ -29,6 +29,15 @@ const extensionSource = path.join(release, `ProductComparison-BrowserExtension-$
 const archive = path.join(release, publicFiles[2]);
 if (!fs.existsSync(archive)) throw new Error('请先把桌面交付的插件ZIP复制到 release 目录');
 if (!fs.existsSync(path.join(extensionSource, 'manifest.json'))) throw new Error('缺少插件发布目录');
+const proofFile = path.join(release, `verified-${version}.json`);
+if (!fs.existsSync(proofFile)) throw new Error('缺少实际打包EXE启动验收记录，请先完成打包验收');
+const proof = JSON.parse(fs.readFileSync(proofFile, 'utf8'));
+if (proof.version !== version || proof.updateVersion !== canonical || proof.installerSha256 !== sha(installerFile)
+  || proof.extensionSha256 !== sha(archive) || proof.metadataSha256 !== sha(path.join(release, 'latest.yml'))
+  || proof.startup?.version !== canonical || proof.startup?.packaged !== true || proof.startup?.loginVisible !== true
+  || proof.startup?.modelRetryLoaded !== true || proof.startup?.buyerProvidersLoaded !== true || proof.startup?.rendererErrors?.length !== 0) {
+  throw new Error('打包EXE启动验收或产物哈希不一致，停止发布');
+}
 const manifest = { version, files: publicFiles.map(name => ({ name, sha256: sha(path.join(release, name)) })), metadataSha256: sha(path.join(release, 'latest.yml')) };
 fs.writeFileSync(path.join(release, 'publish-manifest.json'), JSON.stringify(manifest));
 const sshArgs = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-i', key];

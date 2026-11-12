@@ -112,3 +112,16 @@ test('整批动态排除线按最高模型分调整，并优先排序同款建�
   const corrected = review.apply(high[3], { verdict: 'likely_same', note: '结构一致，人工确认' });
   assert.equal(review.belowThreshold(corrected, high), false, '直接确认同款应能纠正模型低分，不要求人工重新评分');
 });
+
+test('高相似候选跨平台展示价格，不要求货号相同或伪造人工同款确认',()=>{
+  const item=(id,platform,price,score,verdict='similar',goodsId='2086')=>({...candidate(id,verdict),platform,goodsId,price,detailUrl:`https://${platform}.example/item/${id}`,visualComparison:{...candidate(id,verdict).visualComparison,score}});
+  const rows=[item('wsy','wsy',150,96),item('qcc','qcc',145,94,'similar','QCC-2086'),item('other','e3hui',138,80,'similar','E3-77'),item('excluded','zwd',120,99,'different')];
+  const groups=review.highSimilarityPriceGroups(rows);
+  assert.equal(groups.length,1);assert.equal(groups[0].goodsId,null);assert.deepEqual(groups[0].items.map(row=>[row.item.platform,row.item.goodsId,row.price]),[['qcc','QCC-2086',145],['wsy','2086',150]]);
+  assert.equal(review.decision(groups[0].items[0].item),null);
+  const reviewedDifferent=review.apply(item('manual-different','e3hui',130,97),{verdict:'different',note:'领口不同'});
+  assert.equal(review.highSimilarityPriceGroups([rows[0],rows[1],reviewedDifferent])[0].items.length,2);
+  const reviewedLow=review.apply(item('manual-low','e3hui',130,97),{verdict:'likely_same',score:70,note:'关键款式细节仍需核对'});
+  assert.equal(review.highSimilarityPriceGroups([rows[0],rows[1],reviewedLow])[0].items.length,2,'人工将匹配分降到阈值以下后，不纳入高相似比价');
+  assert.deepEqual(review.highSimilarityPriceGroups([rows[0]]),[],'只有一条可比候选时不显示价格比较区');
+});

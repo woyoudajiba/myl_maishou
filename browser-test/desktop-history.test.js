@@ -29,6 +29,9 @@ test('实际 Electron：任务批次时间、删除确认与失败恢复、清�
   const code = [
     "const {app}=require('electron');app.setPath('userData'," + JSON.stringify(dataDir) + ');',
     "globalThis.fetch=async (url, options={})=>{if(!String(url).startsWith('https://wsfile.cn/myladmin/api/auth/'))throw new Error('禁止外网请求');if(String(url).endsWith('/login')){const input=JSON.parse(options.body);globalThis.testUser={id:input.username,username:input.username,displayName:'任务记录测试'};return Response.json({user:testUser,token:'fixture-session',expiresAt:new Date(Date.now()+3600000).toISOString()});}return Response.json({user:globalThis.testUser,ok:true});};",
+    // Keep the persisted queued fixture queued while exercising history operations.
+    // No model work belongs in this test, and login normally resumes the queue.
+    'const bridgeModule=require(' + JSON.stringify(path.join(root, 'desktop/bridge-server.js')) + ');const createBridge=bridgeModule.createDesktopBridge;bridgeModule.createDesktopBridge=options=>createBridge({...options,canProcess:()=>false});',
     'require(' + JSON.stringify(path.join(root, 'desktop/main.js')) + ');'
   ].join('\n');
   await fs.writeFile(bootstrap, code);
@@ -74,6 +77,7 @@ test('实际 Electron：任务批次时间、删除确认与失败恢复、清�
     await assert.rejects(fs.access(path.join(jobsDir, 'queries', ids[0] + '.txt')));
     await assert.rejects(fs.access(path.join(jobsDir, 'images', ids[0])));
     await page.reload(); await page.waitForSelector('#appShell', { state: 'visible' });
+    await page.locator('#navWork').click();
     assert.equal(await first.count(), 0);
     await page.locator('#clearJobs').click();
     assert.match(await page.locator('#deleteJobsList').textContent(), /14:19:00.*29 张候选/);

@@ -3,7 +3,7 @@ const Zip=require('../desktop/node_modules/adm-zip');
 const {parseBuyerTable}=require('../desktop/buyer-import');
 const {BuyerWorkflow}=require('../desktop/buyer-workflow');
 const {BuyerEngine}=require('../desktop/buyer-engine');
-const {validateSupplierFacts,buildPayload,manualSupplierFacts}=require('../desktop/buyer-evidence');
+const {mergeStructuredSupplierFacts,validateSupplierFacts,buildPayload,manualSupplierFacts}=require('../desktop/buyer-evidence');
 const {BuyerSettings}=require('../desktop/buyer-settings');
 const {syncBuyerFolder}=require('../desktop/buyer-files');
 const {exportBuyerXlsx}=require('../desktop/buyer-import');
@@ -87,6 +87,22 @@ test('保留中文供应商货号并要求原文完整匹配',()=>{
   assert.ok(validateSupplierFacts({...facts,articleNo:'YPD6711AB'},details).missing.includes('供应商有效货号'));
   const manuallyEntered=manualSupplierFacts({articleNo,supplierName:'异频道潮牌',cost:163,colors:['象牙白'],sizes:['M'],materials:[{name:'锦纶',rate:100}],sizeImageIndex:0,fork:0},null,details);
   assert.equal(manuallyEntered.articleNo,articleNo);
+});
+test('页面已采集的供应商货号、店铺、明确供货价、颜色和尺码覆盖模型空值或错误值',()=>{
+  const details={title:'羽绒马甲',shopName:'国际服装城30732',sku:'2086',price:150,priceType:'supply',colors:['灰色','黑色'],sizes:['M','L','XL','2XL'],visibleText:'档口 国际服装城30732 批价 ¥150.00 货号:2086 颜色 灰色 黑色 尺码:M L XL 2XL',attributes:['货号:2086','颜色:灰色 黑色','尺码:M L XL 2XL']};
+  const model={articleNo:'错误货号',supplierName:'国际服装城1B21',cost:145,colors:['蓝色'],sizes:[],materials:[],evidence:{}};
+  const merged=mergeStructuredSupplierFacts(model,details);
+  assert.equal(merged.articleNo,'2086');assert.equal(merged.supplierName,'国际服装城30732');assert.equal(merged.cost,150);
+  assert.deepEqual(merged.colors,['灰色','黑色']);assert.deepEqual(merged.sizes,['M','L','XL','2XL']);
+  const valid=validateSupplierFacts({...merged,materials:[{name:'聚酯纤维',rate:100}],fork:0,sizeImageIndex:0,evidence:{...merged.evidence,materials:'材质成分：聚酯纤维100%'}},{...details,images:['https://img.alicdn.com/size.jpg'],attributes:[...details.attributes,'材质成分：聚酯纤维100%']});
+  assert.equal(valid.articleNo,'2086');assert.equal(valid.supplierName,'国际服装城30732');assert.equal(valid.cost,150);assert.deepEqual(valid.sizes,['M','L','XL','2XL']);
+  const tiered=mergeStructuredSupplierFacts({cost:141,evidence:{}},{...details,price:145,priceType:'tiered'});assert.equal(tiered.cost,141,'阶梯/非单一价格不能覆盖成确认的供货成本');
+});
+test('当前记录选定网商园商品时，不将另一条青创网候选价覆盖进供货事实',()=>{
+  const details={url:'https://cs.wsy.com/item.htm?id=20916699',title:'羽绒马甲',shopName:'国际服装城30732',sku:'2086',price:150,priceType:'supply',colors:['灰色','黑色'],sizes:['M','L','XL','2XL'],visibleText:'货号2086 档口 国际服装城30732 批价 ¥150.00 颜色灰色 黑色 尺码M L XL 2XL',attributes:['货号:2086','颜色:灰色 黑色','尺码:M L XL 2XL']};
+  const model={articleNo:'2086',supplierName:'蒙洛里克服饰',cost:145,colors:['深灰色','黑色'],sizes:[],materials:[],evidence:{}};
+  const merged=mergeStructuredSupplierFacts(model,details);
+  assert.equal(merged.supplierName,'国际服装城30732');assert.equal(merged.cost,150);assert.deepEqual(merged.colors,['灰色','黑色']);assert.deepEqual(merged.sizes,['M','L','XL','2XL']);
 });
 test('互拓连接按账号加密保存，快照不回传密码或OAuth密钥，更换服务需重新输入对应凭据',async t=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'buyer-settings-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));const storage={encrypt:value=>Buffer.from(value).toString('base64'),decrypt:value=>Buffer.from(value,'base64').toString('utf8')};const settings=new BuyerSettings({dataDir:dir,storage});await settings.load();

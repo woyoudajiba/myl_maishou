@@ -35,6 +35,18 @@ class BuyerWorkflow {
     if(task.automation?.enabled||task.automation?.inFlight||task.imageFile)throw new Error('任务已开始或已有本地图片，不能作为未启动任务回滚');
     return this.mutate(async()=>{const index=this.state.tasks.findIndex(row=>row.id===id);if(index<0)return false;this.state.tasks.splice(index,1);return true;});
   }
+  assertDeletable(id){
+    const task=this.task(id);if(!task)throw new Error('买手任务不存在');
+    if(task.automation?.inFlight||task.automation?.enabled&&!['attention','completed','stopped'].includes(task.automation.state))throw new Error('任务仍在处理或请求结果未知，请先处理当前请求后再删除');
+    return task;
+  }
+  async deleteTask(id){
+    await this.mutate(async()=>{this.assertDeletable(id);this.state.tasks=this.state.tasks.filter(task=>task.id!==id);});
+    // Only the app-owned source image is removed. Product folders and comparison records are independent.
+    let cleanupWarning='';
+    try{await fs.rm(path.join(this.imageDir,`${id}.jpg`),{force:true});}catch{cleanupWarning='任务记录已删除，但本机商品主图文件未能清理。';}
+    return{deleted:true,cleanupWarning};
+  }
   async setAutoPaused(paused){return this.mutate(async()=>{this.state.automationPaused=paused===true;return{paused:this.state.automationPaused};});}
   async importTable(preview){
     const written=[];

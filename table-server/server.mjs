@@ -176,7 +176,8 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
     const rowTotal = db.prepare('SELECT COUNT(*) AS count FROM rows WHERE table_id = ? AND deleted=0').get(value.id).count;
     const rowCount = db.prepare("SELECT COUNT(*) AS count FROM rows WHERE table_id = ? AND deleted=0 AND trim(source_url) <> ''").get(value.id).count;
     const nextPosition = db.prepare('SELECT COALESCE(MAX(position),0)+1 AS n FROM rows WHERE table_id=?').get(value.id).n;
-    return { id: value.id, name: value.name, revision: value.revision, rowCount, rowTotal, nextPosition, counts: Object.fromEntries(counts.map(item => [item.status, item.count])), createdAt: value.created_at, updatedAt: value.updated_at };
+    const activeTaskIds=db.prepare("SELECT task_id FROM rows WHERE table_id=? AND deleted=0 AND task_id<>''").all(value.id).map(row=>row.task_id);
+    return { id: value.id, name: value.name, revision: value.revision, rowCount, rowTotal, nextPosition, activeTaskIds, counts: Object.fromEntries(counts.map(item => [item.status, item.count])), createdAt: value.created_at, updatedAt: value.updated_at };
   }
   function userFromRequest(req) { return clean(req.headers['x-table-user'], 160) || 'local'; }
   async function authorize(req, target, { create = false } = {}) {
@@ -255,9 +256,10 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
     mutate(tableId, user, 'import', `新增/导入 ${inputRows.length} 行`, () => writeRows(inputRows));
     return { imported: inputRows.length, rows:inserted, table: publicTable(table(tableId)) };
   }
-  function updateRow(tableId, rowId, patch, ifVersion, user) {
+  function updateRow(tableId, rowId, patch, ifVersion, user, taskId) {
     const current = row(rowId);
     if (!current || current.table_id !== tableId || (current.deleted && !current.task_id)) throw Object.assign(new Error('表格行不存在'), { status: 404 });
+    if(taskId!==undefined && (!TABLE_ID.test(String(taskId)) || current.task_id!==taskId))throw Object.assign(new Error('该行已绑定其他任务，拒绝旧任务回写'),{status:409,current:publicRow(current)});
     if(current.deleted && Object.keys(patch||{}).some(key=>!['automationState','automationStep','automationError','erpProductNo'].includes(key))) throw Object.assign(new Error('商品行已删除，只能由原任务回写处理进度'),{status:409,current:publicRow(current)});
     if (!Number.isInteger(Number(ifVersion)) || Number(ifVersion) !== current.version) throw Object.assign(new Error('表格行已被其他人修改，请刷新后重试'), { status: 409, current: publicRow(current) });
     if (current.task_id && ['articleNo', 'sourceType', 'sourceUrl', 'humanStatus','selectDate','tableId'].some(key => Object.hasOwn(patch || {}, key) && patch[key] !== publicRow(current)[key])) throw Object.assign(new Error('该行已领取，不能再修改货号、来源链接、目录编号或确认状态'), { status: 409, current: publicRow(current) });
@@ -466,7 +468,7 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
         });
         return json(res, 200, { ok: true });
       }
-      if (req.method === 'PATCH' && action === 'rows' && TABLE_ID.test(tableMatch[3] || '')) { const body = await parseBody(req); return json(res, 200, { ok: true, row: updateRow(target.id, tableMatch[3], body.patch || body, body.ifVersion, user) }); }
+      if (req.method === 'PATCH' && action === 'rows' && TABLE_ID.test(tableMatch[3] || '')) { const body = await parseBody(req); return json(res, 200, { ok: true, row: updateRow(target.id, tableMatch[3], body.patch || body, body.ifVersion, user, body.taskId) }); }
       return fail(res, 404, '接口不存在');
     } catch (error) { logger.error?.(error); return fail(res, error.status || 400, error.message || '请求失败', error.current ? { current: error.current } : {}); }
   }

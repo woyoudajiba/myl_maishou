@@ -7,7 +7,7 @@ class BuyerEngine {
   async start(ids){if(!Array.isArray(ids)||!ids.length||ids.length>500)throw new Error('请选择要自动处理的商品');await this.workflow.mutate(async()=>{const tasks=[...new Set(ids)].map(id=>{const task=this.workflow.task(id);if(!task)throw new Error('商品任务不存在');return task;});const now=new Date().toISOString();for(const task of tasks){if(['completed','attention'].includes(task.automation?.state))continue;task.automation={...task.automation,enabled:true,state:'queued',step:task.automation?.step||'source',tags:task.automation?.tags||[],error:'',updatedAt:now};task.events.push({at:now,message:'已加入自动买手队列'});task.updatedAt=now;}this.workflow.state.automationPaused=false;});for(const id of ids){const task=this.workflow.task(id);if(task)await this.providers.onTaskUpdated?.(task);}this.kick();return this.snapshot();}
   async pause(){await this.workflow.setAutoPaused(true);return this.snapshot();}
   async resume(){await this.workflow.setAutoPaused(false);this.kick();return this.snapshot();}
-  async retry(id){const task=this.workflow.task(id);if(!task?.automation||!['attention','stopped'].includes(task.automation.state))throw new Error('仅待处理或停止任务可重试');if(task.automation.tags?.some(tag=>['多供应商同款','重复来源','表内重复','互拓已有商品'].includes(tag)))throw new Error('请先在详情选择供应商或处理重复关系');const patch=await this.providers.recover?.(task)||{};await this.workflow.patchAutomation(id,{...patch,enabled:true,state:'queued',error:'',tags:[],inFlight:null},'从原任务检查点继续');await this.resume();}
+  async retry(id){const task=this.workflow.task(id);if(!task?.automation||!['attention','stopped'].includes(task.automation.state))throw new Error('仅待处理或停止任务可重试');await this.providers.validateTask?.(task);if(task.automation.tags?.some(tag=>['多供应商同款','重复来源','表内重复','互拓已有商品'].includes(tag)))throw new Error('请先在详情选择供应商或处理重复关系');const patch=await this.providers.recover?.(task)||{};await this.workflow.patchAutomation(id,{...patch,enabled:true,state:'queued',error:'',tags:[],inFlight:null},'从原任务检查点继续');await this.resume();}
   async resolveSupplier(id,index,{manualConfirmed=false}={}){
     const task=this.workflow.task(id),a=task?.automation;
     if(!a||!Number.isInteger(index))throw new Error('供应商候选选择无效');
@@ -43,11 +43,11 @@ class BuyerEngine {
   async attention(task,tag,error,extra={}){await this.workflow.patchAutomation(task.id,{...extra,state:'attention',inFlight:null,waitingReason:'',tags:[tag],error:String(error).slice(0,400)},`待处理：${error}`);await this.providers.onTaskUpdated?.(task);}
   kick(){if(this.closed||this.signal?.aborted||this.workflow.state.automationPaused)return;for(const task of [...this.workflow.state.tasks].sort((a,b)=>(this.lastTried.get(a.id)||0)-(this.lastTried.get(b.id)||0))){if(this.busy.size>=this.concurrency)break;if(!task.automation?.enabled||terminal.has(task.automation.state)||this.busy.has(task.id))continue;this.busy.add(task.id);this.lastTried.set(task.id,Date.now());void this.step(task).catch(error=>this.attention(task,error.tag||'处理失败',error.message||'商品处理失败')).finally(()=>{this.busy.delete(task.id);});}}
   async result(task,name,fn){
-    if(task.automation.state!=='waiting')await this.workflow.patchAutomation(task.id,{state:'running',waitingReason:''},name);
+    if(task.automation.state!=='waiting'){await this.workflow.patchAutomation(task.id,{state:'running',waitingReason:''},name);await this.providers.onTaskUpdated?.(task);}
     const value=await fn();if(this.signal?.aborted||this.closed)return null;
     if(!value||value.waiting){
       const reason=value?.reason||'等待平台或模型返回结果';
-      if(task.automation.state!=='waiting'||task.automation.waitingReason!==reason)await this.workflow.patchAutomation(task.id,{state:'waiting',waitingReason:reason},reason);
+      if(task.automation.state!=='waiting'||task.automation.waitingReason!==reason){await this.workflow.patchAutomation(task.id,{state:'waiting',waitingReason:reason},reason);await this.providers.onTaskUpdated?.(task);}
       return null;
     }
     return value;
@@ -55,6 +55,7 @@ class BuyerEngine {
   async next(task,step,patch={},message=''){await this.workflow.patchAutomation(task.id,{...patch,step,state:'queued',error:'',waitingReason:'',inFlight:null},message);await this.providers.onTaskUpdated?.(task);}
   async step(task){
     const a=task.automation,p=this.providers;let value;
+    await p.validateTask?.(task);
     if(a.step==='source'){
       value=await this.result(task,'读取表格商品来源',()=>p.source(task));if(!value)return;
       await this.next(task,'supplier_search',{source:value},'来源图片和套图资料已取得');

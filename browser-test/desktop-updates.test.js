@@ -5,6 +5,9 @@ const path = require('node:path');
 const os = require('node:os');
 const { _electron } = require('playwright');
 const root = path.resolve(__dirname, '..');
+const currentVersion = require('../manifest.json').version_name;
+const nextVersion = currentVersion.replace(/-v(\d+)$/, (_, revision) => '-v' + (Number(revision) + 1));
+const fixtureVersion = require('../desktop/updates').updateVersion(nextVersion);
 
 test('实际桌面：登录提示可延后，每次登录检查，确认才下载，进度/失败重试和更新页面均可用', { timeout: 40000 }, async () => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'product-updates-ui-'));
@@ -16,8 +19,9 @@ test('实际桌面：登录提示可延后，每次登录检查，确认才下�
       app.setPath('userData', PROFILE);
       const { EventEmitter } = require('node:events');
       const updates = require(UPDATES);
-      const info = { version: '26.11.8-5', releaseNotes: '测试新版：优化任务重试与软件更新。', releaseDate: '2026-11-09T00:00:00.000Z',
-        files: [{ url: 'ProductComparison-26.11.8-5-x64.exe', sha512: Buffer.alloc(64).toString('base64'), size: 100 }] };
+      const fixtureVersion = FIXTURE_VERSION;
+      const info = { version: fixtureVersion, releaseNotes: '测试新版：优化任务重试与软件更新。', releaseDate: '2026-11-09T00:00:00.000Z',
+        files: [{ url: `ProductComparison-${fixtureVersion}-x64.exe`, sha512: Buffer.alloc(64).toString('base64'), size: 100 }] };
       globalThis.updateCalls = { checks: 0, downloads: 0, installs: 0 };
       const updater = new EventEmitter();
       updater.setFeedURL = () => {};
@@ -36,7 +40,7 @@ test('实际桌面：登录提示可延后，每次登录检查，确认才下�
       require(MAIN);
     };
     await fs.writeFile(bootstrap, '(' + script.toString().replace('PROFILE', JSON.stringify(path.join(temp, 'profile')))
-      .replace('UPDATES', JSON.stringify(path.join(root, 'desktop/updates.js'))).replace('MAIN', JSON.stringify(path.join(root, 'desktop/main.js'))) + ')();');
+      .replace('UPDATES', JSON.stringify(path.join(root, 'desktop/updates.js'))).replace('FIXTURE_VERSION', JSON.stringify(fixtureVersion)).replace('MAIN', JSON.stringify(path.join(root, 'desktop/main.js'))) + ')();');
     const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
     app = await _electron.launch({ executablePath: path.join(root, 'desktop/node_modules/electron/dist/electron.exe'), args: [bootstrap], env });
     const page = await app.firstWindow(), errors = [];
@@ -46,7 +50,7 @@ test('实际桌面：登录提示可延后，每次登录检查，确认才下�
       await page.waitForSelector('#updateDialog', { state: 'visible' });
     };
     await login();
-    assert.match(await page.locator('#updateDialogVersion').textContent(), /26\.11\.08-v4.*26\.11\.08-v5/);
+    assert.equal(await page.locator('#updateDialogVersion').textContent(), `当前 ${currentVersion} → 新版 ${nextVersion}`);
     assert.deepEqual(await app.evaluate(() => updateCalls), { checks: 1, downloads: 0, installs: 0 });
     await fs.mkdir(path.join(root, 'output/playwright'), { recursive: true });
     await page.screenshot({ path: path.join(root, 'output/playwright/update-login-prompt.png') });

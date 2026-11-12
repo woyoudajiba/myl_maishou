@@ -27,7 +27,7 @@
         const detailRoot=document.querySelector('#J_DivItemDesc'),hero=imageList('.wsy-booth img.J_ImgBooth',['data-zoom-image','src'],'wsy');mainImages=unique([...mainImages,...hero,...imageList('.wsy-gallery .J_pic_open[href]',['href'],'wsy')]);
         const detailNodes=detailRoot?Array.from(detailRoot.querySelectorAll('img')).filter(productImageNode):[];detailImageNodes=detailNodes.length;detailImages=unique(detailNodes.flatMap(node=>['data-original','data-src','data-zoom-image','src'].map(key=>safeImage(node.getAttribute(key),'wsy')).filter(Boolean)));
         const variants=Array.from(document.querySelectorAll('.table-sku tr')).map(row=>({size:read(row.querySelector('td:first-child')),sku:(read(row.querySelector('.sku'))||read(row.querySelector('td:nth-child(2)'))).replace(/^sku\s*[:：]?\s*/i,''),price:Number(read(row.querySelector('.price')).replace(/[^\d.]/g,''))||null})).filter(row=>row.size);
-        if(variants.length)attributes.push('SKU规格：'+variants.map(row=>[row.size,row.sku,row.price].filter(Boolean).join('/')).join('、'));priceTiers=variants.some(row=>row.price&&row.price!==price)?variants.map(row=>({price:row.price,quantity:row.size})):[];
+        if(variants.length)attributes.push('SKU规格：'+variants.map(row=>[row.size,row.sku,row.price].filter(Boolean).join('/')).join('、'));priceTiers=variants.some(row=>row.price&&row.price!==price)?variants.map(row=>({price:row.price,quantity:row.size})):[];if(priceTiers.length)priceType='tiered';
       }else if(platform==='zwd'){
         const root=document.querySelector('[class*="index-goodsParamsWrapper-"]'),rows=root?Array.from(root.children).map(read):[],labels=['颜色分类','尺寸','尺码','货号','适用年龄','腰型','工艺','年份季节','厚薄','颜色'],map=Object.fromEntries(rows.map(row=>{const label=labels.find(value=>row.startsWith(value));return[label||'',label?row.slice(label.length).replace(/^\s*[:：]?\s*/,'').trim():''];}).filter(row=>row[0]&&row[1]));attributes.push(...rows);
         title=firstText(['[class*="index-titleBox-"]','[class*="index-titleWrapper-"]'])||title;sku=firstText(['[class*="index-itemNoPanel-"] span'])||map['货号']||sku;shopName=firstText(['[class*="index-shopName-"] h2 a','[class*="index-shopName-"]'])||shopName;
@@ -75,6 +75,36 @@
       const style=getComputedStyle(node).backgroundImage;
       for(const match of style.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/gi))addProductImage(match[1]||match[2]||match[3]?.trim());
     }
+    const taobaoImages=[];
+    if(input.platform==='taobao'){
+      const gallerySelector='#ice-container img,[class*="PicGallery"] img,[class*="picGallery"] img,[class*="MainPic"] img,[class*="mainPic"] img,[class*="PicList"] img,[class*="pic-list"] img,[class*="picList"] img,[class*="imageViewer"] img,[class*="ImageViewer"] img,[class*="carousel"] img,[class*="Carousel"] img';
+      const nodes=new Set([...document.querySelectorAll(gallerySelector),...Array.from(document.images)]);
+      const itemImage=/\/(?:imgextra|bao\/uploaded)\//i;
+      const thumbnail=/(?:[._-])\d{2,3}x\d{2,3}(?:q\d+)?(?:[._-]|$)/i;
+      for(const node of nodes){
+        if(!visible(node)||node.closest('header,footer,nav,[class*="recommend"],[class*="Recommend"],[class*="related"],[class*="Related"],[class*="shop"],[class*="Shop"],[class*="comment"],[class*="Comment"]'))continue;
+        const rect=node.getBoundingClientRect(),gallery=!!node.closest('#ice-container,[class*="PicGallery"],[class*="picGallery"],[class*="MainPic"],[class*="mainPic"],[class*="PicList"],[class*="pic-list"],[class*="picList"],[class*="imageViewer"],[class*="ImageViewer"],[class*="carousel"],[class*="Carousel"]');
+        const values=[];
+        for(const key of ['data-zoom-image','data-big','data-src','data-original','data-ks-lazyload','data-lazyload','src','currentSrc']){
+          const value=key==='currentSrc'?node.currentSrc:node.getAttribute(key);
+          if(value)values.push({value,priority:/zoom|big|original|ks-lazyload|lazyload/i.test(key)?2:1});
+        }
+        for(const value of [node.getAttribute('srcset'),node.getAttribute('data-srcset')].filter(Boolean)){
+          for(const entry of value.split(',')){
+            const [url,descriptor]=entry.trim().split(/\s+/),width=Number(descriptor?.replace(/w$/,''))||0;
+            if(url)values.push({value:url,priority:2+Math.min(width,10000)/10000});
+          }
+        }
+        values.sort((a,b)=>b.priority-a.priority);
+        for(const candidate of values){
+          const image=safeImage(candidate.value,'taobao');
+          if(!image||!itemImage.test(new URL(image).pathname))continue;
+          if(thumbnail.test(new URL(image).pathname))continue;
+          if(rect.width<180&&rect.height<180&&candidate.priority<2.5)continue;
+          if(!taobaoImages.includes(image))taobaoImages.push(image);
+        }
+      }
+    }
     if(input.platform==='wsy')productImages.push(...imageList('.wsy-booth img.J_ImgBooth',['data-zoom-image','src'],'wsy'),...imageList('.wsy-gallery .J_pic_open[href]',['href'],'wsy'));
     if(input.platform==='zwd'){
       try{const similar=document.querySelector('a[href*="SearchSimilar"]')?.getAttribute('href');const value=new URL(similar,location.href).searchParams.get('img_url');addProductImage(value);}catch{}
@@ -88,7 +118,7 @@
     const title=clean(product.name||firstText(['h1'])||genericTitle||meta('meta[property="og:title"]')||document.title).slice(0,1000);
     const shopName=clean(offer.seller?.name||firstText(['[class*="shopName"],[class*="shop-name"],[class*="store-name"]'])||(input.platform==='douyin'?firstText(['.shop-component__shop-content__basic-info__title-area__name']):'')).slice(0,300);
     const price=Number(offer.price);
-    const base={url:location.href,title,sku:clean(product.sku||product.mpn||'').slice(0,200),shopName,price:Number.isFinite(price)&&price>0?price:null,description,attributes:unique(attributes),images:unique(productImages).slice(0,60),visibleText:body,salesText:(body.match(/(?:已售|总销量|销量|月售)\s*[\d.,万千+]+\s*(?:件|笔)?|[\d.,万千+]+\s*人(?:付款|购买)/)||[])[0]||'',productId:new URL(location.href).searchParams.get('id')||'',collectedAt:new Date().toISOString(),pageRole:input.pageRole};
+    const base={url:location.href,title,sku:clean(product.sku||product.mpn||'').slice(0,200),shopName,price:Number.isFinite(price)&&price>0?price:null,description,attributes:unique(attributes),images:unique(input.platform==='taobao'?[...taobaoImages,...productImages]:productImages).slice(0,60),visibleText:body,salesText:(body.match(/(?:已售|总销量|销量|月售)\s*[\d.,万千+]+\s*(?:件|笔)?|[\d.,万千+]+\s*人(?:付款|购买)/)||[])[0]||'',productId:new URL(location.href).searchParams.get('id')||'',collectedAt:new Date().toISOString(),pageRole:input.pageRole};
     if(supplierPlatforms.has(input.platform))return detailsResult(input.platform,base);
     return{...base,quality:{state:base.title&&base.images.length?'complete':'partial',pageRole:input.pageRole||'source',missingFields:[!base.title?'title':'',!base.images.length?'mainImage':''].filter(Boolean),imageCoverage:{detailNodes:0,detailImages:0,placeholders:0,complete:true}}};
   }

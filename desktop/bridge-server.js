@@ -511,6 +511,13 @@ function createDesktopBridge({ port = 43821, host = '127.0.0.1', dataDir, token:
 
   return {
     token, snapshot, resume, deleteJobs, enqueueTaobaoSearch,
+    async cancelBuyerTaskCommands(taskId){
+      const changed=[];
+      for(const command of browserCommands.values())if(command.buyerTaskId===taskId&&['queued','claimed'].includes(command.status)){
+        changed.push([command,{...command}]);Object.assign(command,{status:'failed',error:'本机买手任务已删除',updatedAt:new Date().toISOString()});delete command.imageData;
+      }
+      try{await saveBrowserCommands();}catch(error){for(const [command,previous] of changed)Object.assign(command,previous);throw error;}
+    },
     async failBuyerBrowserCommand(id,error){
       const command=browserCommands.get(id);
       if(!command||!['buyer-source','buyer-supplier-search'].includes(command.kind)||!['queued','claimed'].includes(command.status))return false;

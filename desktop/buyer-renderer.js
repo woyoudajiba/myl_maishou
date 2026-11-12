@@ -25,7 +25,7 @@
   function render(current){
     if(current)snapshot=current;
     if(!snapshot?.authenticated){selected.clear();expandedMarket.clear();rendered='';$('buyerTaskList').replaceChildren();$('buyerTaskForm').reset();$('buyerBulkRows').value='';$('buyerMessage').textContent='';return;}
-    const tasks=[...(snapshot.buyerTasks||[])].sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)||(a.origin?.rowNumber||0)-(b.origin?.rowNumber||0));
+    const tasks=[...BuyerAutoUI.tasksForScope(snapshot)].sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)||(a.origin?.rowNumber||0)-(b.origin?.rowNumber||0));
     for(const id of selected)if(!tasks.some(task=>task.id===id))selected.delete(id);
     const next=JSON.stringify([tasks,(snapshot.jobs||[]).filter(job=>tasks.some(task=>!task.automation&&(job.buyerTaskId===task.id||task.queryId&&job.queryId===task.queryId))),(snapshot.browserCommands||[]).filter(command=>command.kind==='taobao-image-search'),snapshot.taobaoPaused,[...selected],[...expandedMarket],$('buyerAutoFilter').value,visibleLimit]);
     if(next===rendered)return;
@@ -35,7 +35,7 @@
     $('buyerTaobaoResume').hidden=!snapshot.taobaoPaused;
     $('buyerTaobaoPause').hidden=!!snapshot.taobaoPaused;
     $('buyerTaskCount').textContent=tasks.length+' 条';
-    if(!tasks.length){$('buyerTaskList').innerHTML='<div class="empty"><h3>还没有买手任务</h3><p>粘贴运营表行，或从抖音主图页面把已下载商品加入。</p></div>';return;}
+    if(!tasks.length){$('buyerAutoMore').hidden=true;$('buyerAutoVisibleCount').textContent='当前范围没有任务，可切换到全部历史任务查看。';$('buyerTaskList').innerHTML='<div class="empty"><h3>还没有买手任务</h3><p>粘贴运营表行，或从抖音主图页面把已下载商品加入。</p></div>';return;}
     const filter=$('buyerAutoFilter').value,filtered=tasks.filter(task=>filter==='all'||filter==='attention'&&task.automation?.state==='attention'||filter==='completed'&&task.automation?.state==='completed'||filter==='processing'&&task.automation?.enabled&&!['attention','completed','stopped'].includes(task.automation.state));
     $('buyerAutoMore').hidden=filtered.length<=visibleLimit;$('buyerAutoVisibleCount').textContent=`显示 ${Math.min(visibleLimit,filtered.length)}/${filtered.length} 件`;
     $('buyerTaskList').innerHTML=filtered.slice(0,visibleLimit).map(task=>{
@@ -46,7 +46,7 @@
       const events=(task.events||[]).slice(-3).map(e=>'<small>'+esc(timeText(e.at))+' · '+esc(e.message)+'</small>').join('');
       const taobao=task.marketplaceSearch||{},taobaoJob=(snapshot.jobs||[]).find(entry=>entry.id===taobao.jobId),searchCommand=(snapshot.browserCommands||[]).find(command=>command.kind==='taobao-image-search'&&command.buyerTaskId===task.id&&['queued','claimed'].includes(command.status));
       let html='<article class="buyer-task" data-buyer-task="'+esc(task.id)+'"><div class="buyer-task-head"><label class="check"><input class="buyer-select" type="checkbox" '+(selected.has(task.id)?'checked':'')+' aria-label="选择此买手任务"><span><strong>'+esc(task.articleNo||task.sourceTitle||'未命名商品')+'</strong><small>'+esc(sourceTypes[task.sourceType]||task.sourceType)+' · '+esc(timeText(task.createdAt))+'</small></span></label><span class="pill">'+esc(stage)+'</span></div>';
-      html+='<p class="buyer-source-url">'+esc(task.sourceUrl)+'</p><p class="'+(task.hasImage?'buyer-image-state':'problem')+'">'+(task.hasImage?'已保存商品主图':'尚未添加商品图，无法进行图搜')+'</p>';
+      html+='<small>任务 ID：'+esc(task.id)+'</small><p class="buyer-source-url">'+esc(task.sourceUrl)+'</p><p class="'+(task.hasImage?'buyer-image-state':'problem')+'">'+(task.hasImage?'已保存商品主图':'尚未添加商品图，无法进行图搜')+'</p>';
       if(job)html+='<p>桌面比对：'+esc(job.queryName||job.id)+' · 人工已审核 '+esc(job.reviewSummary?.reviewed||0)+' 条</p>';
       if(supplier)html+='<p>供应商候选：'+esc(supplier.title)+' · '+esc(supplier.shopName)+' · 货号 '+esc(supplier.articleNo||'待核实')+' · '+(supplier.listedPrice==null?'价格缺失':'¥'+esc(supplier.listedPrice))+'</p>';
       if(market.url)html+='<p>淘宝套图：'+esc(market.url)+' · '+(market.confirmedSame?'人工确认同款':'待人工核对')+'</p>';
@@ -65,6 +65,7 @@
       if(marketEligible.length>5)html+='<button type="button" class="secondary buyer-taobao-more">'+(expandedMarket.has(task.id)?'收起候选':'查看全部 '+marketEligible.length+' 个淘宝候选')+'</button>';
       html+='</div>';
       if(options.length)html+='<div class="buyer-candidate"><label>已人工确认的供应商候选<select class="buyer-candidate-select">'+choices+'</select></label><button type="button" class="secondary buyer-assemble">检查资料缺项</button></div>';
+      html+='<div class="buyer-task-actions"><button type="button" class="secondary buyer-delete-task">删除本机任务</button></div>';
       if(events)html+='<details class="buyer-events"><summary>最近记录</summary>'+events+'</details>';
       return html+'</article>';
     }).join('');
@@ -104,7 +105,8 @@
       $('buyerBulkRows').value='';await refresh();notify('已导入 '+ok+' 条。'+errors.slice(0,5).join('；'));
     }finally{busy=false;$('importBuyerRows').disabled=false}})();
   });
-  $('buyerSelectAll').addEventListener('click',()=>{for(const task of snapshot?.buyerTasks||[])if(task.hasImage)selected.add(task.id);render();});
+  $('buyerSelectAll').addEventListener('click',()=>{for(const task of BuyerAutoUI.tasksForScope(snapshot))if(task.hasImage)selected.add(task.id);render();});
+  $('buyerTaskScope').addEventListener('change',()=>{selected.clear();visibleLimit=50;BuyerAutoUI.render(snapshot);render();});
   $('buyerAutoFilter').addEventListener('change',()=>{visibleLimit=50;render();});
   $('buyerAutoMore').addEventListener('click',()=>{visibleLimit+=50;render();});
   $('buyerTaobaoBatch').addEventListener('click',()=>void action($('buyerTaobaoBatch'),async()=>{

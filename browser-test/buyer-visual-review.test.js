@@ -36,16 +36,34 @@ test('打包买手例外：对照原图和候选图、按平台登录入口重�
   for(let i=0;i<100;i++){state=await page.evaluate(()=>window.desktop.snapshot());command=state.browserCommands.find(row=>row.buyerTaskId===added.taskId&&row.kind==='buyer-supplier-search'&&row.status==='queued');if(command)break;await page.waitForTimeout(50);}
   assert.ok(command,'读取主图后应搜索供应商');
   const supplier=(id,platform,host)=>({id,platform,title:`${platform}外套`,shopName:`${platform}档口`,detailUrl:`https://www.${host}/goods/${id}.html`,imageUrl:`https://pics.17qcc.com/${id}.jpg`,price:99});
-  assert.equal((await ack(command,{items:[supplier('same','qcc','17qcc.com'),supplier('uncertain','zwd','17zwd.com')],records:[{key:'wsy',phase:'failed',message:'平台需要登录后才能搜图'},{key:'zwd',phase:'complete',total:2},{key:'qcc',phase:'complete',total:2},{key:'e3hui',phase:'complete',total:0}]})).status,200);
+  assert.equal((await ack(command,{items:[supplier('same','qcc','17qcc.com'),supplier('uncertain','zwd','17zwd.com'),...Array.from({length:26},(_,index)=>supplier('extra-'+index,'qcc','17qcc.com'))],records:[{key:'wsy',phase:'failed',message:'平台需要登录后才能搜图'},{key:'zwd',phase:'complete',total:1},{key:'qcc',phase:'complete',total:27},{key:'e3hui',phase:'complete',total:0}]})).status,200);
   for(let i=0;i<300;i++){state=await page.evaluate(()=>window.desktop.snapshot());const current=state.buyerTasks?.find(task=>task.id===added.taskId);if(current?.automation?.state==='attention')break;await page.waitForTimeout(100);}
   assert.ok(state.buyerTasks?.find(task=>task.id===added.taskId)?.automation?.state==='attention',JSON.stringify({authenticated:state.authenticated,error:state.error,tasks:state.buyerTasks?.map(task=>({state:task.automation?.state,error:task.automation?.error,step:task.automation?.step})),messages:await page.locator('#loginMessage').textContent()}));
   const detailed=await page.evaluate(id=>window.desktop.buyerTaskDetail(id),added.taskId),jobId=detailed.automation.checkpoints?.supplierComparison?.jobId;assert.ok(jobId);assert.equal(await page.locator('.buyer-open-comparison-card').count(),1,JSON.stringify({summary:state.buyerTasks[0].automation,jobs:state.jobs.map(job=>({id:job.id,queryName:job.queryName,buyerTaskId:job.buyerTaskId})),step:detailed.automation.step,status:detailed.automation.state}));await page.locator('.buyer-open-comparison-card').click();await page.waitForFunction(()=>!document.getElementById('workPage').hidden);assert.equal(await page.locator(`#jobs article[data-job="${jobId}"] .job-results`).getAttribute('open'),'');await page.locator('#navBuyer').click();
   await page.locator('.buyer-auto-detail').click();await page.locator('#buyerAutoDetailDialog').waitFor({state:'visible'});
   await page.waitForFunction(()=>document.querySelectorAll('[data-source-gallery] img').length===3);
-  await page.waitForFunction(()=>[...document.querySelectorAll('.buyer-compare-image')].filter(node=>node.src.startsWith('data:image/jpeg;base64,')).length===2);
+  await page.waitForFunction(()=>[...document.querySelectorAll('.buyer-compare-image')].filter(node=>node.src.startsWith('data:image/jpeg;base64,')).length===4);
   assert.match(await page.locator('[data-source-preview-state]').textContent(),/共识别 3 张图片/);
   assert.match(await page.locator('#buyerAutoDetailBody').textContent(),/商品链接图片[\s\S]*供应商候选/);
   assert.match(await page.locator('#buyerAutoDetailBody').textContent(),/吻合|差异|模型未完成识别/);assert.match(await page.locator('#buyerAutoDetailBody').textContent(),/网商园/);
+  const candidateLayout=await page.locator('.buyer-source-compare-list').evaluate(node=>({list:node.getBoundingClientRect().width,parent:node.parentElement.getBoundingClientRect().width}));
+  assert.ok(candidateLayout.list>=candidateLayout.parent-2,'供应商候选占满容器，不再保留空白右栏');
+  const cards=await page.locator('.buyer-compare-candidate').evaluateAll(nodes=>nodes.map(node=>({left:node.getBoundingClientRect().left,top:node.getBoundingClientRect().top,width:node.getBoundingClientRect().width})));
+  assert.equal(cards.length,4);assert.ok(Math.abs(cards[0].top-cards[1].top)<2,'桌面宽度并列展示两张大图卡片');
+  assert.ok(cards[0].width>350);
+  for(let index=0;index<6;index++)await page.locator('.buyer-more-candidates').last().click();
+  assert.match(await page.locator('.buyer-candidate-pagination').textContent(),/第 25–28 \/ 28/,'第24条后的候选仍可翻看');
+  assert.equal(await page.locator('.buyer-compare-candidate[data-candidate="27"]').count(),1);
+  assert.equal(await page.locator('.buyer-more-candidates').last().isDisabled(),true);
+  for(let index=0;index<6;index++)await page.locator('.buyer-more-candidates').first().click();
+  await page.locator('#buyerDetailNav [data-detail-section=history]').click();
+  assert.equal(await page.locator('#buyerDetailHistory').getAttribute('open'),'');
+  assert.equal(await page.locator('#buyerAutoDetailClose').evaluate(node=>{const r=node.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight;}),true);
+  await page.locator('#buyerAutoDetailClose').click();await page.locator('#buyerAutoDetailDialog').waitFor({state:'hidden'});
+  await page.locator('.buyer-auto-detail').click();await page.locator('#buyerAutoDetailDialog').waitFor({state:'visible'});
+  await page.waitForFunction(()=>[...document.querySelectorAll('.buyer-compare-image')].filter(node=>node.src.startsWith('data:image/jpeg;base64,')).length===4);
+  await page.locator('#buyerDetailNav [data-detail-section=candidates]').click();
+  await fs.mkdir(path.join(root,'output/playwright'),{recursive:true});await page.screenshot({path:path.join(root,'output/playwright/buyer-flow-candidates-desktop.png')});
   await page.locator('.buyer-load-gallery[data-index="0"]').click();
   for(let i=0;i<100;i++){state=await page.evaluate(()=>window.desktop.snapshot());command=state.browserCommands.find(row=>row.buyerTaskId===added.taskId&&row.kind==='buyer-source'&&row.slot.startsWith('gallery:0:')&&['queued','claimed'].includes(row.status));if(command)break;await page.waitForTimeout(50);}
   assert.ok(command,'应按需排队读取候选商品详情图集');assert.equal((await ack(command,{url:command.detailUrl,title:'供应商裤装',shopName:'同款档口',images:['https://pics.17qcc.com/supplier-main.jpg','https://pics.17qcc.com/supplier-side.jpg','https://pics.17qcc.com/supplier-back.jpg'],visibleText:'尺码和商品说明'})).status,200);
@@ -59,6 +77,6 @@ test('打包买手例外：对照原图和候选图、按平台登录入口重�
   for(let i=0;i<100;i++){state=await page.evaluate(()=>window.desktop.snapshot());const current=state.buyerTasks?.find(item=>item.id===added.taskId);if(current?.automation?.supplierSelection?.method==='manual'&&current.automation.supplierSelection.sourceIndex===1)break;await page.waitForTimeout(100);}
   const selected=state.buyerTasks?.find(item=>item.id===added.taskId);assert.ok(selected?.automation?.supplierSelection?.method==='manual',JSON.stringify({authenticated:state.authenticated,error:state.error,notice:await page.locator('#buyerAutoMessage').textContent(),detail:(await page.locator('#buyerAutoDetailBody').textContent()).slice(0,600),task:selected?.automation},null,2));
   state=await page.evaluate(()=>window.desktop.snapshot());const task=state.buyerTasks.find(item=>item.id===added.taskId);
-  assert.equal(task.automation.step,'supplier_details');assert.equal(task.automation.supplier.detailUrl,'https://www.17zwd.com/goods/uncertain.html');assert.equal(task.automation.supplier.visualComparison.verdict,'uncertain');assert.equal(task.automation.supplierSelection.verdict,'likely_same');assert.ok(task.events.some(event=>/人工对照图片确认/.test(event.message)));assert.equal(await app.evaluate(()=>buyerVisualCalls.models),1);assert.deepEqual(errors,[]);
+  assert.equal(task.automation.step,'supplier_details');assert.equal(task.automation.supplier.detailUrl,'https://www.17zwd.com/goods/uncertain.html');assert.equal(task.automation.supplier.visualComparison.verdict,'uncertain');assert.equal(task.automation.supplierSelection.verdict,'likely_same');assert.ok(task.events.some(event=>/人工对照图片确认/.test(event.message)));assert.equal(await app.evaluate(()=>buyerVisualCalls.models),7);assert.deepEqual(errors,[]);
   await page.screenshot({path:path.join(root,'output/playwright/buyer-visual-review.png')});
 });

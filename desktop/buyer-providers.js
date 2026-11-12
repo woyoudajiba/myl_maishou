@@ -2,13 +2,22 @@ const crypto=require('node:crypto');
 const {downloadCandidate,validateQuery}=require('./images');
 const {invokeJson}=require('./models');
 const {retryModelJson}=require('./model-retry');
-const {validateSupplierFacts,buildPayload}=require('./buyer-evidence');
+const {mergeStructuredSupplierFacts,validateSupplierFacts,buildPayload}=require('./buyer-evidence');
 const {reliable}=require('./buyer-engine');
 const {sourceLink}=require('./buyer-import');
 const {safeItem,safePlatformSearches}=require('./bridge-server');
 const imageData=buffer=>`data:image/jpeg;base64,${buffer.toString('base64')}`;
 const tagError=(message,tag)=>Object.assign(new Error(message),{tag});
 const pageErrorTag=message=>/平台(?:需要|要求)登录|请先登录|请在浏览器登录|安全验证|验证码|拖动滑块|平台要求.*验证/.test(message)?'平台登录或验证':'页面采集失败';
+function selectSupplierImageIndices(details,maximum=4){
+  const images=Array.isArray(details?.images)?details.images:[],groups=details?.imageGroups||{};
+  const toIndices=values=>[...new Set((Array.isArray(values)?values:[]).map(url=>images.indexOf(url)).filter(index=>index>=0))];
+  const detailIndices=toIndices(groups.details);
+  const candidates=detailIndices.length?detailIndices:toIndices(groups.main).concat(toIndices(groups.colors));
+  if(candidates.length<=maximum)return candidates;
+  if(maximum<=1)return[candidates[0]];
+  return[...new Set(Array.from({length:maximum},(_,index)=>candidates[Math.round(index*(candidates.length-1)/(maximum-1))]))];
+}
 const publicSource=result=>{
   if(!result||typeof result!=='object'||Array.isArray(result))throw new Error('商品页面资料无效');
   const source=sourceLink(result.url);if(!source)throw new Error('商品页面未返回有效来源地址');
@@ -77,7 +86,12 @@ function createBuyerProviders({workflow,bridge,settings,model,signal,onTaskUpdat
     try{const job=await bridge.enqueueBuyerComparison({buyerTaskId:task.id,kind,automatic:true,queryId,query,searchIssues,platformSearches,queryName:(task.articleNo||task.sourceTitle||`表格第${task.origin?.rowNumber||''}行`)+(kind==='supplier'?' · 供应商同款':' · 淘宝套图'),items});await checkpoint(task,slot,{queryId,jobId:job.id});}catch(error){if(/队列已有10/.test(error.message))return{waiting:true};throw error;}
     return{waiting:true};
   }
-  async function evidenceImages(task,details){const images=[imageData(await workflow.image(task.id))];images.supplierIndices=[];for(const [index,source] of (details.images||[]).slice(0,3).entries()){try{images.push((await downloadCandidate(source,signal)).dataUrl);images.supplierIndices.push(index);}catch{}}return images;}
+  async function evidenceImages(task,details){
+    const images=[imageData(await workflow.image(task.id))];images.supplierIndices=[];
+    const all=Array.isArray(details.images)?details.images:[];
+    for(const index of selectSupplierImageIndices(details,4))try{images.push((await downloadCandidate(all[index],signal)).dataUrl);images.supplierIndices.push(index);}catch{}
+    return images;
+  }
   return{
     async recover(task){
       const a=task.automation,checkpoints={...a.checkpoints};
@@ -141,6 +155,7 @@ function createBuyerProviders({workflow,bridge,settings,model,signal,onTaskUpdat
       const details=task.automation.supplierDetails;
       const images=await evidenceImages(task,details);
       const output=await invokeModelJson(task,'supplier_facts',{instruction:'提取供应商事实，返回 {articleNo,supplierName,cost,colors:string[],sizes:string[],materials:[{name,rate:number}],sizeImageIndex:number|null,fork:0|1|null,variant,warehouse,categoryName,priceConflict:boolean,evidence:{articleNo,supplierName,cost,colors,sizes,materials}}。evidence每项须为供应商原文连续引文；只有图片可清晰读到时可用{quote,imageIndex}，imageIndex对应supplier.images索引。输入第一张是选品原图，随后供应商图的原索引顺序见availableSupplierImageIndices。cost只能取明确供货价；阶梯价须连同数量档原文保留，不能将最低限价当作供货成本，规格或采购数量不明时将priceConflict设为true。尺码图索引对应supplier.images。fork仅在有公版/专版证据时确定；未知用null。不要把店铺推荐商品当当前商品。',data:{supplier:details,inputArticleNo:task.articleNo,availableSupplierImageIndices:images.supplierIndices},images});
+      Object.assign(output,mergeStructuredSupplierFacts(output,details));
       output.verifiedOcrFields=[];
       const ocr=Object.entries(output.evidence||{}).filter(([,value])=>value&&typeof value==='object');
       if(ocr.length){const verification=await invokeModelJson(task,'supplier_ocr',{instruction:'独立复核供应商图片的OCR事实。第一张是选品原图，随后是供应商图片。只返回{verifiedFields:string[]}。逐个核对字段值、quote及imageIndex，数值/比例/颜色尺码有任何不清楚或不一致就不得列入verifiedFields，不使用常识猜测。',data:{facts:output,evidence:ocr,availableSupplierImageIndices:images.supplierIndices},images});output.verifiedOcrFields=Array.isArray(verification.verifiedFields)?verification.verifiedFields.filter(key=>images.supplierIndices.includes(output.evidence?.[key]?.imageIndex)):[];}
@@ -188,4 +203,4 @@ function createBuyerProviders({workflow,bridge,settings,model,signal,onTaskUpdat
     async onTaskUpdated(task){return onTaskUpdated(task);}
   };
 }
-module.exports={createBuyerProviders,publicSource};
+module.exports={createBuyerProviders,publicSource,selectSupplierImageIndices};

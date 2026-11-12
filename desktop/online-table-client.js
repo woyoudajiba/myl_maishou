@@ -104,17 +104,17 @@ class OnlineTableClient {
     if (!this.configured() || !TABLE_ID.test(String(rowId || ''))) throw new Error('在线选品表行编号无效');
     return this.request(`/api/tables/${this.tableId}/rows/${rowId}`, { method: 'DELETE', body: JSON.stringify({ifVersion}) });
   }
-  async updateRow(rowId, patch, ifVersion) {
+  async updateRow(rowId, patch, ifVersion, taskId) {
     if (!this.configured() || !TABLE_ID.test(String(rowId || ''))) throw new Error('在线选品表行编号无效');
-    return this.request(`/api/tables/${this.tableId}/rows/${rowId}`, { method: 'PATCH', body: JSON.stringify({ patch: normalizeSourceInput(patch), ifVersion }) });
+    return this.request(`/api/tables/${this.tableId}/rows/${rowId}`, { method: 'PATCH', body: JSON.stringify({ patch: normalizeSourceInput(patch), ifVersion, ...(taskId?{taskId}:{}) }) });
   }
   async updateTask(rowId, taskId, patch, ifVersion) {
     // Rebase only workflow fields belonging to the same claimed task. User edits stay intact.
     const workflowPatch = Object.fromEntries(['automationState','automationStep','automationError','erpProductNo'].filter(key=>Object.hasOwn(patch,key)).map(key=>[key,patch[key]]));
-    try { return await this.updateRow(rowId,workflowPatch,ifVersion); }
+    try { return await this.updateRow(rowId,workflowPatch,ifVersion,taskId); }
     catch(error){
       if(error.status!==409 || !taskId || error.current?.taskId!==taskId)throw error;
-      return this.updateRow(rowId,workflowPatch,error.current.version);
+      return this.updateRow(rowId,workflowPatch,error.current.version,taskId);
     }
   }
   async claimRow(rowId, taskId) {

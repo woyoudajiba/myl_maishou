@@ -101,6 +101,17 @@
     }
     return result;
   }
+  function highSimilarityPriceGroups(items, minimumScore = 90) {
+    const rows = [];
+    for (const item of Array.isArray(items) ? items : []) {
+      const score = rankingScore(item), verdict = comparison(item)?.verdict, price = Number(item?.price);
+      if (score === null || score < minimumScore || !['likely_same','similar'].includes(verdict)
+        || ['different','uncertain'].includes(decision(item)?.verdict) || !Number.isFinite(price) || price <= 0 || !item.detailUrl) continue;
+      if (!rows.some(row => row.item.platform === item.platform && row.item.detailUrl === item.detailUrl)) rows.push({ item, price, score });
+    }
+    if (rows.length < 2) return [];
+    return [{ goodsId: null, items: rows.sort((a, b) => a.price - b.price || b.score - a.score) }];
+  }
   function text(items, reviewMode) {
     const stats = summary(items, reviewMode);
     const threshold = exclusionThreshold(items);
@@ -117,5 +128,5 @@
     : filter === 'pending' ? !!comparison(item) && !decision(item)
     : filter === 'recommended' ? !!comparison(item) && !decision(item) && ['likely_same', 'similar', 'uncertain'].includes(comparison(item).verdict)
     : filter === 'final' ? !!effective(item, reviewMode) : true;
-  return { labels, mode, comparison, modelScore, signature, decision, apply, effective, effectiveScore, corrected, compare, scoreText, scoreStatus, summary, text, status, matchesFilter, minimumScore, exclusionThreshold, thresholdText, excluded, rankingScore, belowThreshold };
+  return { labels, mode, comparison, modelScore, signature, decision, apply, effective, effectiveScore, corrected, compare, scoreText, scoreStatus, summary, highSimilarityPriceGroups, text, status, matchesFilter, minimumScore, exclusionThreshold, thresholdText, excluded, rankingScore, belowThreshold };
 });

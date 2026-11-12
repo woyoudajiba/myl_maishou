@@ -33,15 +33,18 @@ test('实际 Electron：TDL 登录、模型管理、图片比对、人工纠正�
     });
     await app.context().route('https://**/*', route => {
       if (route.request().url().startsWith('https://imgcdn.wsy.com/')) return route.fulfill({ contentType: 'image/png', body: Buffer.from(image.split(',')[1], 'base64') });
+      if (route.request().url().startsWith('https://pics.17qcc.com/')) return route.fulfill({ contentType: 'image/png', body: Buffer.from(image.split(',')[1], 'base64') });
       return route.abort();
     });
     // Exercise the actual main-process download, protocol, queue, IPC and disk
     // writes. Only remote transport and DNS are fixtures; no external calls.
-    await app.evaluate((_, image) => {
+    await app.evaluate(({ shell }, image) => {
+      globalThis.openedProductLinks = [];
+      shell.openExternal = async url => { openedProductLinks.push(url); };
       process.getBuiltinModule('node:dns/promises').lookup = async () => [{ address: '93.184.216.34', family: 4 }];
       globalThis.testModelCalls = 0;
       globalThis.fetch = async (url, options) => {
-        if (String(url).startsWith('https://imgcdn.wsy.com/')) return new Response(Buffer.from(image.split(',')[1], 'base64'), { headers: { 'content-type': 'image/png' } });
+        if (String(url).startsWith('https://imgcdn.wsy.com/') || String(url).startsWith('https://pics.17qcc.com/')) return new Response(Buffer.from(image.split(',')[1], 'base64'), { headers: { 'content-type': 'image/png' } });
         if (String(url).startsWith('https://wsfile.cn/myladmin/api/auth/')) {
           if (String(url).endsWith('/login')) {
             const input = JSON.parse(options.body);
@@ -87,10 +90,13 @@ test('实际 Electron：TDL 登录、模型管理、图片比对、人工纠正�
       body: JSON.stringify({ query: image, goodsId: '本地审核测试', platformSearches: [
         { platform:'wsy', selected:true, phase:'complete', receivedCount:2, reportedTotal:97 },
         { platform:'zwd', selected:true, phase:'failed', receivedCount:0, reportedTotal:null, message:'17网登录已失效', searchGroups:[{type:'accurate',phase:'failed',receivedCount:0,reportedTotal:null}] },
-        { platform:'qcc', selected:false, phase:'not_selected', receivedCount:0, reportedTotal:null },
+        { platform:'qcc', selected:true, phase:'complete', receivedCount:1, reportedTotal:24 },
         { platform:'e3hui', selected:false, phase:'not_selected', receivedCount:0, reportedTotal:null }
-      ], items: [1, 2].map(id => ({ platform: 'wsy', id: String(id), price: 20, searchGroup: id === 1 ? 'accurate' : 'similar',
-        imageUrl: `https://imgcdn.wsy.com/${id}.png`, detailUrl: `https://www.wsy.com/item.htm?id=${id}`, platformTags: id === 2 ? ['新品', '闪电发货', 'discard-unknown'] : [], dataSource: 'qcc_api', raw: { private: 'never-copy' } })) }) });
+      ], items: [
+        { platform:'wsy',id:'1',goodsId:'2086',title:'羽绒马甲网商园',price:150,searchGroup:'accurate',imageUrl:'https://imgcdn.wsy.com/1.png',detailUrl:'https://www.wsy.com/item.htm?id=20916699' },
+        { platform:'wsy',id:'2',goodsId:'A2',title:'网商园候选二',price:140,searchGroup:'similar',imageUrl:'https://imgcdn.wsy.com/2.png',detailUrl:'https://www.wsy.com/item.htm?id=2',platformTags:['新品','闪电发货','discard-unknown'],dataSource:'qcc_api',raw:{private:'never-copy'} },
+        { platform:'qcc',id:'3',goodsId:'2086',title:'羽绒马甲青创网',shopName:'蒙洛里克服饰',price:145,searchGroup:'similar',imageUrl:'https://pics.17qcc.com/3.png',detailUrl:'https://www.17qcc.com/item/5847358.html' }
+      ] }) });
     assert.equal(response.status, 202);
     const { id } = await response.json();
     let recognized;
@@ -104,12 +110,28 @@ test('实际 Electron：TDL 登录、模型管理、图片比对、人工纠正�
     const job = page.locator(`article[data-job="${id}"]`);
     await job.locator('.review-next').waitFor({state:'visible'});
     assert.equal(await job.locator('.review-filter').inputValue(), 'recommended');
-    assert.equal(await job.locator('.job-dashboard strong').allTextContents().then(x=>x.join(',')), '2,0,0,0');
+    assert.equal(await job.locator('.job-dashboard strong').allTextContents().then(x=>x.join(',')), '3,0,0,0');
     assert.equal(await job.locator('.job-results').getAttribute('open'), null);
     assert.equal(await job.locator('.platform-search-row').count(),4);
     assert.match(await job.locator('.platform-search-summary').textContent(),/网商园.*报告总数 97/);
     assert.match(await job.locator('.platform-search-summary').textContent(),/17 网.*搜索失败.*准确搜失败/);
-    assert.match(await job.locator('.platform-search-summary').textContent(),/青创网.*未选择，未发起搜索/);
+    assert.match(await job.locator('.platform-search-summary').textContent(),/青创网.*搜索完成.*报告总数 24/);
+    const pricePanel=job.locator('.price-comparison-summary');
+    await pricePanel.waitFor({state:'visible'});
+    assert.match(await pricePanel.textContent(),/2086/);
+    assert.match(await pricePanel.textContent(),/A2/,'不同平台货号不同也进入同批高相似候选比价');
+    assert.match(await pricePanel.textContent(),/网商园/);
+    assert.match(await pricePanel.textContent(),/青创网/);
+    assert.match(await pricePanel.textContent(),/¥140/);
+    assert.match(await pricePanel.textContent(),/¥145/);
+    assert.match(await pricePanel.textContent(),/¥150/);
+    assert.match(await pricePanel.textContent(),/不代表已确认同款/);
+    assert.deepEqual(await pricePanel.locator('.open-product-detail').evaluateAll(nodes=>nodes.map(node=>node.textContent.trim())),['打开网商园商品链接','打开青创网商品链接','打开网商园商品链接'],'所有高相似候选按候选列表价由低到高排序并保留各自链接');
+    await pricePanel.locator('.open-product-detail[data-index="1"]').click();
+    await pricePanel.locator('.open-product-detail[data-index="2"]').click();
+    await pricePanel.locator('.open-product-detail[data-index="0"]').click();
+    assert.deepEqual(await app.evaluate(()=>openedProductLinks),['https://www.wsy.com/item.htm?id=2','https://www.17qcc.com/item/5847358.html','https://www.wsy.com/item.htm?id=20916699']);
+    await pricePanel.screenshot({path:path.join(root,'output/playwright/high-similarity-price-comparison.png')});
     await job.locator('.platform-search-summary').screenshot({path:path.join(root,'output/playwright/platform-coverage-desktop.png')});
     await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(800,700));
     await job.locator('.platform-search-summary').scrollIntoViewIfNeeded();
@@ -130,7 +152,7 @@ test('实际 Electron：TDL 登录、模型管理、图片比对、人工纠正�
     assert.equal((await page.evaluate(()=>window.desktop.snapshot())).browserCommands.some(c=>c.kind==='product-details'), false);
     await job.locator('.view-all-results').click();
     await job.locator('.job-results[open]').waitFor();
-    assert.equal(await job.locator('.result-row').count(),2);
+    assert.equal(await job.locator('.result-row').count(),3);
     assert.match(await job.locator('.result-row[data-index="1"] .result-tags').textContent(), /网商园.*相似搜/);
     await job.locator('.platform-filter').selectOption('zwd');
     await page.waitForFunction(()=>document.querySelectorAll('.result-row').length===0);
@@ -156,9 +178,28 @@ test('实际 Electron：TDL 登录、模型管理、图片比对、人工纠正�
     });
     assert.equal(detailResponse.status,200);
     await page.locator('#refresh').click();
+    await job.locator('.platform-filter').selectOption('all');
+    await job.locator('.review-filter').selectOption('pending');
+    await page.waitForFunction(()=>document.querySelectorAll('.result-row').length===1);
+    await job.locator('.review-item[data-index="2"]').click();
+    await page.locator('.confirm-same').click();
+    await page.waitForSelector('#reviewDialog',{state:'hidden'});
+    let qccDetailCommand;
+    for(let i=0;i<100;i++){
+      qccDetailCommand=(await page.evaluate(()=>window.desktop.snapshot())).browserCommands.find(c=>c.kind==='product-details'&&c.itemIndex===2);
+      if(qccDetailCommand)break;
+      await page.waitForTimeout(25);
+    }
+    assert.equal(qccDetailCommand.status,'queued');
+    const qccDetailResponse=await fetch(`http://127.0.0.1:${initial.port}/v1/browser-commands/${qccDetailCommand.id}/ack`,{
+      method:'POST',headers:{'Content-Type':'application/json','X-Desktop-Token':initial.token},
+      body:JSON.stringify({status:'accepted',result:{title:'青创网羽绒马甲详情',price:145,sku:'2086',shopName:'蒙洛里克服饰',description:'商品详情',attributes:['材质：白鸭绒'],images:['https://pics.17qcc.com/qcc-detail.jpg'],visibleText:'货号2086 批发价145元'}})
+    });
+    assert.equal(qccDetailResponse.status,200);
+    await page.locator('#refresh').click();
     await job.locator('.export-job').waitFor({state:'visible'});
     assert.match(await job.textContent(), /同款详情 · 供应商详情商品/);
-    assert.equal(await job.locator('.product-detail-gallery img').count(),2);
+    assert.equal(await job.locator('.product-detail-gallery img').count(),3);
     await job.locator('.review-mode').selectOption('direct');
     await page.waitForFunction(()=>document.getElementById('jobs').textContent.includes('模型建议仍为暂定结论'));
     assert.equal((await job.textContent()).includes('有效结论'),false);
@@ -176,8 +217,10 @@ test('实际 Electron：TDL 登录、模型管理、图片比对、人工纠正�
     assert.equal(saved.items[1].humanReview.score,undefined);
     assert.deepEqual(saved.items[1].platformTags,['新品','闪电发货']);
     assert.equal(saved.items[1].searchGroup,'similar');
+    assert.equal(saved.items[2].platform,'qcc');
+    assert.equal(saved.items[2].productDetails.title,'青创网羽绒马甲详情');
     assert.equal(saved.items[1].raw,undefined);
-    assert.equal(saved.reviewSummary.confirmed,1);
+    assert.equal(saved.reviewSummary.confirmed,2);
     assert.equal(saved.reviewSummary.excluded,1);
     assert.equal(await app.evaluate(()=>globalThis.testModelCalls),2);
     const disk=await fs.readFile(path.join(dataDir,'profiles',require('../desktop/accounts').profileId({id:'qa-A'}),'jobs/jobs.json'),'utf8');
@@ -187,7 +230,7 @@ test('实际 Electron：TDL 登录、模型管理、图片比对、人工纠正�
     await job.locator('.export-job').click();
     const exported=JSON.parse(await page.evaluate(()=>globalThis.exportText));
     assert.equal(exported.minimumScore,85);
-    assert.deepEqual(exported.items.map(i=>[i.id,i.finalVerdict]),[['2','likely_same'],['1','different']]);
+    assert.deepEqual(exported.items.map(i=>[i.id,i.finalVerdict]),[['2','likely_same'],['3','likely_same'],['1','different']]);
     assert.equal(exported.items[0].productDetails.title,'供应商详情商品');
     assert.equal(await app.evaluate(()=>globalThis.testModelCalls),2,'审核、筛选与导出不调用模型');
     await job.screenshot({path:path.join(root,'output/playwright/recognition-cockpit-complete.png')});

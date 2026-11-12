@@ -60,6 +60,7 @@ test('回档或人工编辑后，原任务只重试自己的流程回写，保�
   }});
   await client.updateTask(rowId,'own-task',{automationState:'completed',automationStep:'completed',erpProductNo:'ERP001',title:'不能覆盖人工标题'},2);
   assert.equal(requests[1].ifVersion,5);assert.deepEqual(requests[1].patch,{automationState:'completed',automationStep:'completed',erpProductNo:'ERP001'});
+  assert.equal(requests[0].taskId,'own-task');assert.equal(requests[1].taskId,'own-task');
   requests.length=0;
   await assert.rejects(()=>client.updateTask(rowId,'other-task',{automationState:'completed'},2),error=>error.status===409);assert.equal(requests.length,1);
 });

@@ -10,6 +10,7 @@ const { loadOrCreatePairingToken } = require('./pairing');
 const { Models, invokeModel } = require('./models');
 const { PlatformAccounts } = require('./platform-accounts');
 const { BuyerWorkflow, imageData: buyerImageData } = require('./buyer-workflow');
+const {resolveOnlineTask}=require('./online-task-binding');
 const {parseBuyerTable,publicImport,sourceLink,exportBuyerXlsx}=require('./buyer-import');
 const {BuyerSettings}=require('./buyer-settings');
 const {BuyerEngine}=require('./buyer-engine');
@@ -61,14 +62,14 @@ async function syncTaskToOnlineTable(task) {
       await buyerWorkflow.patchAutomation(task.id, { error: `商品文件夹保存失败：${String(error.message || error).slice(0,180)}` }, '商品文件夹保存失败，已保留自动处理结果');
     }
   }
-  if (!task?.onlineTableRowId || !onlineTableSync?.snapshot) return;
+  if (!task?.onlineTableRowId) return;
   try {
-    const client = await buyerSettings.onlineTableClient(accounts.session.token);
-    const result = await client.updateTask(task.onlineTableRowId, task.id, { automationState: task.automation?.state || '', automationStep: task.automation?.step || '', automationError: task.automation?.error || '', erpProductNo: task.automation?.result?.productNo || '' }, task.onlineTableRowVersion || 1);
+    const {client}=await resolveOnlineTask({task,settings:buyerSettings,authToken:accounts.session.token,workflow:buyerWorkflow});
+    const result = await client.updateTask(task.onlineTableRowId, task.id, { automationState: task.automation?.state || '', automationStep: task.automation?.step || '', automationError: task.automation?.error || (task.automation?.state==='waiting'?task.automation.waitingReason||'':''), erpProductNo: task.automation?.result?.productNo || '' }, task.onlineTableRowVersion || 1);
     const updated = result.row || result;
     task.onlineTableRowVersion = updated.version;
     await buyerWorkflow.patchTask(task.id, { onlineTableRowVersion: updated.version });
-    onlineTableSync = { client, snapshot: onlineTableSync?.snapshot || null, lastSyncAt: Date.now() };
+    if(onlineTableSync?.snapshot?.id===client.tableId)onlineTableSync = { ...onlineTableSync, lastSyncAt: Date.now() };
   } catch (error) {
     if (error.status === 409) await buyerWorkflow.patchAutomation(task.id, { error: `在线表格同步冲突：${error.message}` }, '在线表格被其他人修改，已暂停自动覆盖');
   }
@@ -85,9 +86,9 @@ async function refreshOnlineTable() {
   onlineTableDiscoveryAt = Date.now();
   return selected;
 }
-function onlineRowOrigin(row){
+function onlineRowOrigin(row,table=onlineTableSync?.snapshot){
   const tableFields=Object.fromEntries(['shopName','sales7d','peerPrice','peerLocation','goodsCost','warehouse'].map(key=>[key,row[key]||'']));
-  return {batchId:'online-table',digest:'',fileName:'在线表格',sheetName:'买手选品表',rowNumber:row.position,tableId:row.tableId||String(row.position).padStart(2,'0'),selectDate:row.selectDate||'',supplierName:row.supplierName||'',externalCode:row.externalCode||'',selectOperator:row.selectOperator||'',buyerOperator:row.buyerOperator||'',note:row.note||'',tableFields};
+  return {batchId:'online-table',digest:'',fileName:'在线表格',sheetName:table?.name||'买手选品表',rowNumber:row.position,tableId:row.tableId||String(row.position).padStart(2,'0'),selectDate:row.selectDate||'',supplierName:row.supplierName||'',externalCode:row.externalCode||'',selectOperator:row.selectOperator||'',buyerOperator:row.buyerOperator||'',note:row.note||'',tableFields};
 }
 async function pollApprovedOnlineRows() {
   if(onlineTablePollBusy||!authenticated()||!buyerSettings||!buyerSettings.configured())return;
@@ -95,7 +96,7 @@ async function pollApprovedOnlineRows() {
   onlineTablePollBusy=true;
   try{
     const client=await buyerSettings.onlineTableClient(accounts.session.token),page=await client.getRows({offset:0,limit:100,status:'approved'});
-    onlineTableSync={client,snapshot:page.table,lastPollAt:Date.now()};
+    if(buyerSettings.value.onlineTableId===page.table.id)onlineTableSync={client,snapshot:page.table,lastPollAt:Date.now()};
     for(const row of page.rows){
       if(!row.sourceUrl)continue;
       if(row.taskId||row.humanStatus!=='approved'||buyerWorkflow.state.tasks.some(task=>task.onlineTableRowId===row.id))continue;
@@ -103,7 +104,7 @@ async function pollApprovedOnlineRows() {
       try{claimed=await client.claimRow(row.id,taskId);}catch(error){if(error.status===409)continue;throw error;}
       const remote=claimed.row;
       const task=await buyerWorkflow.create({id:taskId,articleNo:remote.articleNo,sourceType:remote.sourceType,sourceUrl:remote.sourceUrl,sourceTitle:remote.title});
-      await buyerWorkflow.patchTask(task.id,{onlineTableRowId:remote.id,onlineTableRowVersion:remote.version,externalCode:remote.externalCode||'',supplierName:remote.supplierName||'',origin:onlineRowOrigin(remote)});
+      await buyerWorkflow.patchTask(task.id,{onlineTableId:page.table.id,onlineTableRowId:remote.id,onlineTableRowVersion:remote.version,externalCode:remote.externalCode||'',supplierName:remote.supplierName||'',origin:onlineRowOrigin(remote,page.table)});
       await buyerEngine.start([task.id]);
     }
   }catch(error){if(error.status===401||error.status===403)startupError=`在线表格登录需要重新连接：${error.message}`;}
@@ -148,6 +149,7 @@ async function activateProfile() {
   accessAllowed = true;
   void refreshOnlineTable().catch(() => { onlineTableSync = null; onlineTableDiscoveryAt = Date.now(); });
   buyerProviders=createBuyerProviders({workflow:buyerWorkflow,bridge,settings:buyerSettings,model:()=>activeModelConfig(),signal:profileController.signal,onTaskUpdated:task=>syncTaskToOnlineTable(task)});
+  buyerProviders.validateTask=task=>resolveOnlineTask({task,settings:buyerSettings,authToken:accounts.session.token,workflow:buyerWorkflow});
   buyerEngine=new BuyerEngine({workflow:buyerWorkflow,providers:buyerProviders,signal:profileController.signal});await buyerEngine.init();if(!buyerSettings.configured())await buyerEngine.pause();
   clearInterval(onlineTablePollTimer);onlineTablePollTimer=setInterval(()=>void pollApprovedOnlineRows(),3000);onlineTablePollTimer.unref?.();void pollApprovedOnlineRows();
   bridge.resume();
@@ -257,12 +259,13 @@ handle('buyer-erp-test',async()=>{const result=await buyerSettings.catalogs(prof
 handle('online-table-list',async()=>{const selected=await refreshOnlineTable();return{tables:onlineTableSync?.tables||[],selectedId:selected?.id||''};});
 handle('online-table-create',async name=>{if(!accounts.session.user.isAdmin)throw Object.assign(new Error('只有 TDL 管理员可以创建在线选品表'),{status:403});const client=await buyerSettings.onlineTableClient(accounts.session.token);const result=await client.create(name);await buyerSettings.save({onlineTableId:result.table.id});await refreshOnlineTable();return{table:result.table};});
 handle('online-table-health',async()=>{const client=await buyerSettings.onlineTableClient(accounts.session.token);return client.health();});
+handle('online-table-select',async tableId=>{const client=await buyerSettings.onlineTableClient(accounts.session.token),result=await client.listTables();if(!result.tables?.some(table=>table.id===tableId))throw new Error('在线选品表不存在');await buyerSettings.save({onlineTableId:tableId});await refreshOnlineTable();return{table:onlineTableSync.snapshot};});
 handle('online-table-rows',async options=>{const client=await buyerSettings.onlineTableClient(accounts.session.token);const result=await client.getRows(options||{});onlineTableSync={client,snapshot:result.table};return result;});
 handle('online-table-find',async({search,index=0})=>{const client=await buyerSettings.onlineTableClient(accounts.session.token);return client.findRows(search,index);});
 handle('online-table-locate',async input=>{const client=await buyerSettings.onlineTableClient(accounts.session.token);return client.locateRow(input);});
 handle('online-table-import',async rows=>{const client=await buyerSettings.onlineTableClient(accounts.session.token);const result=await client.importRows(rows);onlineTableSync={client,snapshot:result.table};return result;});
 handle('online-table-update',async({rowId,version,patch})=>{const client=await buyerSettings.onlineTableClient(accounts.session.token);const result=await client.updateRow(rowId,patch,version);onlineTableSync={client,snapshot:onlineTableSync?.snapshot||null};return result;});
-handle('online-table-approve',async({rowId,version,approved})=>{if(approved&&!buyerSettings.configured())throw new Error('当前 TDL 账号尚未连接互拓，请在设置中填写自己的账号后再确认并提交');const client=await buyerSettings.onlineTableClient(accounts.session.token);const result=await client.updateRow(rowId,{humanStatus:approved?'approved':'rejected'},version);if(approved){const existing=buyerWorkflow.state.tasks.find(task=>task.onlineTableRowId===rowId);if(!existing){const taskId=crypto.randomUUID(),row=result.row||result;const claimed=await client.claimRow(rowId,taskId);const claimedRow=claimed.row||row;const created=await buyerWorkflow.create({id:taskId,articleNo:claimedRow.articleNo,sourceType:claimedRow.sourceType,sourceUrl:claimedRow.sourceUrl,sourceTitle:claimedRow.title});await buyerWorkflow.patchTask(created.id,{onlineTableRowId:rowId,onlineTableRowVersion:claimedRow.version,externalCode:claimedRow.externalCode||'',supplierName:claimedRow.supplierName||'',origin:onlineRowOrigin(claimedRow)});await buyerEngine.start([created.id]);}}return result;});
+handle('online-table-approve',async({rowId,version,approved})=>{if(approved&&!buyerSettings.configured())throw new Error('当前 TDL 账号尚未连接互拓，请在设置中填写自己的账号后再确认并提交');const client=await buyerSettings.onlineTableClient(accounts.session.token);const result=await client.updateRow(rowId,{humanStatus:approved?'approved':'rejected'},version);if(approved){const existing=buyerWorkflow.state.tasks.find(task=>task.onlineTableRowId===rowId);if(!existing){const taskId=crypto.randomUUID(),row=result.row||result;const claimed=await client.claimRow(rowId,taskId);const claimedRow=claimed.row||row;const created=await buyerWorkflow.create({id:taskId,articleNo:claimedRow.articleNo,sourceType:claimedRow.sourceType,sourceUrl:claimedRow.sourceUrl,sourceTitle:claimedRow.title});await buyerWorkflow.patchTask(created.id,{onlineTableId:client.tableId,onlineTableRowId:rowId,onlineTableRowVersion:claimedRow.version,externalCode:claimedRow.externalCode||'',supplierName:claimedRow.supplierName||'',origin:onlineRowOrigin(claimedRow)});await buyerEngine.start([created.id]);}}return result;});
 handle('online-table-restart-local',async({rowId,version,previousTaskId})=>{
   if(!models?.config())throw new Error('请先在本机设置并选择视觉模型');
   if(!buyerSettings.configured())throw new Error(buyerSettings.managedError||'请先在本机连接互拓账号');
@@ -278,7 +281,7 @@ handle('online-table-restart-local',async({rowId,version,previousTaskId})=>{
   const taskId=crypto.randomUUID();let created,restarted;
   try{
     created=await buyerWorkflow.create({id:taskId,articleNo:row.articleNo,sourceType:row.sourceType,sourceUrl:row.sourceUrl,sourceTitle:row.title});
-    await buyerWorkflow.patchTask(taskId,{onlineTableRowId:row.id,onlineTableRowVersion:row.version+1,externalCode:row.externalCode||'',supplierName:row.supplierName||'',origin:onlineRowOrigin(row)});
+    await buyerWorkflow.patchTask(taskId,{onlineTableId:client.tableId,onlineTableRowId:row.id,onlineTableRowVersion:row.version+1,externalCode:row.externalCode||'',supplierName:row.supplierName||'',origin:onlineRowOrigin(row)});
     restarted=await client.restartRow(rowId,{previousTaskId,taskId,ifVersion:row.version});
   }catch(error){if(created)await buyerWorkflow.discardUnstartedTask(taskId).catch(()=>{});if(error.status===404)throw new Error('在线表服务器尚未支持跨电脑重新开始，请先更新在线表服务');throw error;}
   if(restarted.row.version!==row.version+1)await buyerWorkflow.patchTask(taskId,{onlineTableRowVersion:restarted.row.version});
@@ -287,7 +290,7 @@ handle('online-table-restart-local',async({rowId,version,previousTaskId})=>{
   onlineTableSync={client,snapshot:onlineTableSync?.snapshot||null};
   return{taskId,position:row.position};
 });
-handle('online-table-export',async()=>{const client=await buyerSettings.onlineTableClient(accounts.session.token);const rows=[];for(let offset=0;offset<50000;){const page=await client.getRows({offset,limit:1000});rows.push(...page.rows);if(page.nextOffset===null)break;offset=page.nextOffset;}const result=await dialog.showSaveDialog(windowRef,{title:'导出在线选品表',defaultPath:path.join(app.getPath('desktop'),'在线选品表.xlsx'),filters:[{name:'Excel工作簿',extensions:['xlsx']}]});if(result.canceled||!result.filePath)return null;await fs.writeFile(result.filePath,exportBuyerXlsx(rows));return{filePath:result.filePath,rows:rows.length};});
+handle('online-table-export',async()=>{const client=await buyerSettings.onlineTableClient(accounts.session.token);const rows=[];for(let offset=0;offset<50000;){const page=await client.getRows({offset,limit:1000});rows.push(...page.rows);if(page.nextOffset===null)break;offset=page.nextOffset;}const result=await dialog.showSaveDialog(windowRef,{title:'导出在线选品表',defaultPath:path.join(app.getPath('desktop'),'在线选品表.xlsx'),filters:[{name:'Excel工作簿',extensions:['xlsx']}]});if(result.canceled||!result.filePath)return null;await fs.writeFile(result.filePath,exportBuyerXlsx(rows.map(row=>({...row,onlineTableId:client.tableId,onlineTableRowId:row.id}))));return{filePath:result.filePath,rows:rows.length};});
 handle('online-table-history',async (options={})=>{const client=await buyerSettings.onlineTableClient(accounts.session.token);return client.history(options);});
 handle('online-table-history-detail',async id=>{const client=await buyerSettings.onlineTableClient(accounts.session.token);return client.historyDetail(id);});
 handle('online-table-delete',async({rowId,version})=>{
@@ -322,11 +325,29 @@ handle('buyer-auto-facts',async(id,input)=>{
   await buyerWorkflow.patchTask(id,{articleNo:facts.articleNo});await buyerWorkflow.patchAutomation(id,{facts,step:'marketplace',state:'queued',enabled:true,tags:[],error:'',missing:[]},'例外供货资料已补齐，继续自动流程');await buyerEngine.resume();return{continued:true};
 });
 handle('buyer-task-detail',id=>{const task=buyerWorkflow.task(id);if(!task)throw new Error('买手任务不存在');const {imageFile,...safe}=structuredClone(task);return safe;});
+handle('buyer-task-locate',async id=>{const task=buyerWorkflow.task(id);if(!task?.onlineTableRowId)throw new Error('该任务没有在线表格关联');const binding=await resolveOnlineTask({task,settings:buyerSettings,authToken:accounts.session.token,workflow:buyerWorkflow});await buyerSettings.save({onlineTableId:binding.tableId});await refreshOnlineTable();return{rowId:binding.row.id,offset:binding.offset};});
+handle('buyer-task-delete',async id=>{
+  const task=buyerWorkflow.assertDeletable(id);
+  const assertIdle=()=>{if(buyerEngine.busy.has(id)||bridge.snapshot().jobs.some(job=>(job.buyerTaskId===id||task.queryId&&job.queryId===task.queryId)&&['queued','processing'].includes(job.status)))throw new Error('关联的模型任务仍在执行，请等待完成后再删除');};
+  assertIdle();
+  const answer=await dialog.showMessageBox(windowRef,{type:'warning',buttons:['取消','删除本机任务'],defaultId:0,cancelId:0,message:'删除这条本机买手任务？',detail:`任务 ID：${task.id}\n商品：${task.sourceTitle||task.articleNo||task.sourceUrl}\n将删除本机任务和主图、停止该任务的浏览器命令。在线表格、任务 ID 和互拓商品回执保留，不会自动重新提交。独立的识别记录与商品资料文件夹保留。`});
+  if(answer.response!==1)return{canceled:true};
+  assertIdle();buyerWorkflow.assertDeletable(id);
+  if(task.onlineTableRowId&&task.automation?.state!=='completed'){
+    // Persist the stop before removing the local record; a remote failure leaves a recoverable local task.
+    try{
+      const binding=await resolveOnlineTask({task,settings:buyerSettings,authToken:accounts.session.token,workflow:buyerWorkflow});
+      await binding.client.updateTask(task.onlineTableRowId,id,{automationState:'stopped',automationStep:task.automation?.step||'',automationError:'本机任务已删除；保留原任务 ID 与互拓回执'},binding.row.version);
+    }catch(error){if(error.tag!=='表格任务关联失效')throw error;}
+  }
+  await bridge.cancelBuyerTaskCommands(id);
+  return buyerWorkflow.deleteTask(id);
+});
 handle('buyer-export-rows',async()=>{
   const result=await dialog.showSaveDialog(windowRef,{title:'导出运营表回填结果',defaultPath:path.join(app.getPath('desktop'),'买手处理结果.xlsx'),filters:[{name:'Excel工作簿',extensions:['xlsx']},{name:'CSV表格',extensions:['csv']}]});if(result.canceled||!result.filePath)return null;
   const cell=value=>'"'+String(value??'').replace(/^[=+@-]/,"'$&").replace(/"/g,'""')+'"';
-  const rows=buyerWorkflow.state.tasks.filter(task=>task.origin).map(task=>({selectDate:task.origin.selectDate,tableId:task.origin.tableId,supplierName:task.automation?.facts?.supplierName||task.origin.supplierName||task.supplierName,image:task.automation?.source?.images?.[0]||'',sourceUrl:task.sourceUrl,externalCode:task.externalCode||task.origin.externalCode,articleNo:task.articleNo,selectOperator:task.origin.selectOperator,buyerOperator:task.origin.buyerOperator,note:task.automation?.error||task.origin.note,automationState:task.automation?.state,erpProductNo:task.automation?.result?.productNo,productFolder:task.productFolder,updatedAt:task.updatedAt,...task.origin.tableFields}));
-  if(path.extname(result.filePath).toLowerCase()==='.xlsx')await fs.writeFile(result.filePath,exportBuyerXlsx(rows));else{const headers=['选品日期','表格ID','图片','平台链接','供应商','店铺名','近7天销量','同行销售价','同行发货地','货品成本','发货仓','商品编码','互拓编码','选品操作人','买手操作人','备注','处理状态','商品文件夹','更新时间'];const values=[headers,...rows.map(row=>[row.selectDate,row.tableId,row.image,row.sourceUrl,row.supplierName,row.shopName,row.sales7d,row.peerPrice,row.peerLocation,row.goodsCost,row.warehouse,row.externalCode||row.articleNo,row.erpProductNo,row.selectOperator,row.buyerOperator,row.note,row.automationState,row.productFolder,row.updatedAt])];await fs.writeFile(result.filePath,'\uFEFF'+values.map(row=>row.map(cell).join(',')).join('\r\n'),'utf8');}return result.filePath;
+  const rows=buyerWorkflow.state.tasks.filter(task=>task.origin).map(task=>({taskId:task.id,onlineTableId:task.onlineTableId||'',onlineTableRowId:task.onlineTableRowId||'',selectDate:task.origin.selectDate,tableId:task.origin.tableId,supplierName:task.automation?.facts?.supplierName||task.origin.supplierName||task.supplierName,image:task.automation?.source?.images?.[0]||'',sourceUrl:task.sourceUrl,externalCode:task.externalCode||task.origin.externalCode,articleNo:task.articleNo,selectOperator:task.origin.selectOperator,buyerOperator:task.origin.buyerOperator,note:task.automation?.error||task.origin.note,automationState:task.automation?.state,erpProductNo:task.automation?.result?.productNo,productFolder:task.productFolder,updatedAt:task.updatedAt,...task.origin.tableFields}));
+  if(path.extname(result.filePath).toLowerCase()==='.xlsx')await fs.writeFile(result.filePath,exportBuyerXlsx(rows));else{const headers=['选品日期','表格ID','图片','平台链接','供应商','店铺名','近7天销量','同行销售价','同行发货地','货品成本','发货仓','商品编码','互拓编码','选品操作人','买手操作人','备注','处理状态','商品文件夹','更新时间','任务ID','在线表ID','在线行ID'];const values=[headers,...rows.map(row=>[row.selectDate,row.tableId,row.image,row.sourceUrl,row.supplierName,row.shopName,row.sales7d,row.peerPrice,row.peerLocation,row.goodsCost,row.warehouse,row.externalCode||row.articleNo,row.erpProductNo,row.selectOperator,row.buyerOperator,row.note,row.automationState,row.productFolder,row.updatedAt,row.taskId,row.onlineTableId,row.onlineTableRowId])];await fs.writeFile(result.filePath,'\uFEFF'+values.map(row=>row.map(cell).join(',')).join('\r\n'),'utf8');}return result.filePath;
 });
 async function normalizeBuyerImage(dataUrl) {
   if (!buyerImageData(dataUrl)) throw new Error('请选择有效的 JPG、PNG 或 WebP 商品图');

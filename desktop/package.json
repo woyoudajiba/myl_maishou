@@ -1,6 +1,6 @@
 {
   "name": "product-comparison-desktop",
-  "version": "26.11.10",
+  "version": "26.11.12",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -24,7 +24,7 @@
     "artifactName": "ProductComparison-${version}-${arch}.${ext}",
     "electronVersion": "45.0.0",
     "electronDist": "node_modules/electron/dist",
-    "buildVersion": "26.11.10.1",
+    "buildVersion": "26.11.12.1",
     "directories": {
       "app": ".build-app",
       "output": "release"
@@ -71,8 +71,8 @@
     ],
     "detectUpdateChannel": false,
     "releaseInfo": {
-      "releaseName": "26.11.10-v1",
-      "releaseNotes": "四个平台按各自商品页结构采集标题、货号、店铺、供货价、阶梯价、颜色尺码和分组图片；处理懒加载并显示缺项与图集完整度。供应商资料及映射模型瞬时错误自动重试最多3次，耗尽后可手动续一轮。青创网上传/搜图超时显示失败阶段且不自动重发，避免重复消耗搜图额度。中文货号在资料中保留原值；当前ERP草稿契约仍限制字母、数字和 /，不兼容的货号会在提交前拦截。"
+      "releaseName": "26.11.12-v1",
+      "releaseNotes": "新增商品流程详情：从表格商品行查看主图、六阶段进度和等待原因，返回表格定位原商品；顶部固定关闭及当前步骤、供应商图片、平台状态、供货资料、处理记录导航。供应商候选铺满宽度并支持前后翻组，保留未保存备注。处理和等待状态及时回写对应表行。青创网同次搜图等待延长至45秒，增加原生回调缺失时的同次响应读取，取消清理等待，不重复提交不确定请求。保留高相似比价和供应商页面资料优先回填。"
     }
   }
 }

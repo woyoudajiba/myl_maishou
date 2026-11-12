@@ -102,8 +102,8 @@ function parseBuyerTable(buffer,filename){
 function xmlEscape(value){return String(value??'').replace(/[<>&"']/g,char=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&apos;'}[char]));}
 function exportBuyerXlsx(rows){
   if(!Array.isArray(rows)||rows.length>50000)throw new Error('在线表格导出最多支持50000行');
-  const headers=['选品日期','表格ID','图片','平台链接','供应商','店铺名','近7天销量','同行销售价','同行发货地','货品成本','发货仓','商品编码','互拓编码','选品操作人','买手操作人','备注','处理状态','商品文件夹','更新时间'];
-  const values=[headers,...rows.map(row=>[row.selectDate||'',row.tableId||'',row.image||'',row.sourceUrl||'',row.supplierName||'',row.shopName||'',row.sales7d||'',row.peerPrice||'',row.peerLocation||'',row.goodsCost||'',row.warehouse||'',row.externalCode||row.articleNo||'',row.erpProductNo||'',row.selectOperator||'',row.buyerOperator||'',row.note||'',row.automationState||'',row.productFolder||'',row.updatedAt||''])];
+  const headers=['选品日期','表格ID','图片','平台链接','供应商','店铺名','近7天销量','同行销售价','同行发货地','货品成本','发货仓','商品编码','互拓编码','选品操作人','买手操作人','备注','处理状态','商品文件夹','更新时间','任务ID','在线表ID','在线行ID'];
+  const values=[headers,...rows.map(row=>[row.selectDate||'',row.tableId||'',row.image||'',row.sourceUrl||'',row.supplierName||'',row.shopName||'',row.sales7d||'',row.peerPrice||'',row.peerLocation||'',row.goodsCost||'',row.warehouse||'',row.externalCode||row.articleNo||'',row.erpProductNo||'',row.selectOperator||'',row.buyerOperator||'',row.note||'',row.automationState||'',row.productFolder||'',row.updatedAt||'',row.taskId||'',row.onlineTableId||'',row.onlineTableRowId||row.id||''])];
   const columnName=index=>{let value=index+1,result='';while(value){const remainder=(value-1)%26;result=String.fromCharCode(65+remainder)+result;value=Math.floor((value-1)/26);}return result;};
   const cell=(value,rowIndex,columnIndex)=>`<c r="${columnName(columnIndex)}${rowIndex+1}" t="inlineStr"><is><t xml:space="preserve">${xmlEscape(value)}</t></is></c>`;
   const sheetRows=values.map((row,rowIndex)=>`<row r="${rowIndex+1}">${row.map((value,columnIndex)=>cell(value,rowIndex,columnIndex)).join('')}</row>`).join('');

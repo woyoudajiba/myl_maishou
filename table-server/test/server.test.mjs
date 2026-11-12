@@ -34,6 +34,20 @@ test('失败的批量写入不留下半份商品、历史记录或事件',async 
   assert.equal(invalid.response.status,400);assert.deepEqual((await call('/history')).body.history,history);
 });
 
+test('回写必须匹配当前任务ID，即使旧任务拿到最新版本也不能覆盖；当前任务清单排除已删除行',async t=>{
+  const {call}=await tableFixture(t);let row=(await call()).body.rows[0];
+  row=(await call(`/rows/${row.id}`,'PATCH',{ifVersion:row.version,patch:{humanStatus:'approved'}})).body.row;
+  const taskId='11111111-1111-4111-8111-111111111111',oldTaskId='22222222-2222-4222-8222-222222222222';
+  row=(await call(`/claim/${row.id}`,'POST',{taskId})).body.row;
+  assert.deepEqual((await call()).body.table.activeTaskIds,[taskId]);
+  const rejected=await call(`/rows/${row.id}`,'PATCH',{taskId:oldTaskId,ifVersion:row.version,patch:{automationState:'completed',erpProductNo:'WRONG'}});
+  assert.equal(rejected.response.status,409);assert.equal((await call()).body.rows[0].erpProductNo,'');
+  const receipt=await call(`/rows/${row.id}`,'PATCH',{taskId,ifVersion:row.version,patch:{automationState:'completed',erpProductNo:'ERP-CORRECT'}});
+  assert.equal(receipt.response.status,200);row=receipt.body.row;
+  await call(`/rows/${row.id}`,'DELETE',{ifVersion:row.version});
+  assert.deepEqual((await call()).body.table.activeTaskIds,[]);
+});
+
 test('删除、找回、撤销回档均留痕；旧行版本和旧回档预览失效',async t=>{
   const {call}=await tableFixture(t);const original=(await call()).body.rows[0];
   await call(`/rows/${original.id}`,'DELETE',{ifVersion:original.version});

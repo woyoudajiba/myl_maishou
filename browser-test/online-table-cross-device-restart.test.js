@@ -40,7 +40,10 @@ test('共享表供应商异常可在另一台电脑安全重新开始，并打�
   await target.locator('.online-open-source-link').click();assert.deepEqual(await app.evaluate(()=>openedLinks),[row.sourceUrl]);
   await target.locator('.online-restart-local-task').click();
   for(let i=0;i<100;i++){const current=(await(await fetch(base+`?limit=50`,{headers})).json()).rows.find(item=>item.id===row.id);if(current?.taskId&&current.taskId!==previousTaskId){row=current;break;}await page.waitForTimeout(100);}
-  assert.notEqual(row.taskId,previousTaskId);assert.equal(row.humanStatus,'approved');assert.ok(['queued','waiting','running'].includes(row.automationState));assert.equal(row.automationError,'');
+  assert.notEqual(row.taskId,previousTaskId);assert.equal(row.humanStatus,'approved');assert.ok(['queued','waiting','running'].includes(row.automationState));
+  assert.equal(row.automationStep,'source');
+  if(row.automationState==='waiting')assert.match(row.automationError,/等待浏览器插件连接/,'新任务当前等待原因应立即同步到对应原表行');
+  else assert.equal(row.automationError,'');
   const local=await page.evaluate(()=>window.desktop.snapshot()),task=local.buyerTasks.find(item=>item.id===row.taskId);assert.ok(task);assert.equal(task.sourceUrl,'https://v.douyin.com/restart-02/');assert.ok(task.automation.enabled);assert.equal(task.automation.step,'source');
   assert.equal(await app.evaluate(()=>confirmationDetails.at(-1).buttons[1]),'在本机重新开始');assert.match(await app.evaluate(()=>confirmationDetails.at(-1).detail),/原电脑的本地记录保留/);
   assert.deepEqual(errors,[]);

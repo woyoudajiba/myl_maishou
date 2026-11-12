@@ -1,5 +1,37 @@
 const text=value=>String(value??'').trim();
 const array=value=>Array.isArray(value)?value:[];
+function mergeStructuredSupplierFacts(result,details){
+  const output={...result,evidence:{...(result.evidence||{})}};
+  const attributes=array(details.attributes).map(text);
+  const quoteFor=(labels,values)=>{
+    const expected=values.map(value=>text(value)).filter(Boolean);
+    const row=attributes.find(value=>labels.some(label=>value.startsWith(label))&&expected.every(needle=>value.includes(needle)));
+    return row||expected.join(' ');
+  };
+  if(text(details.sku)){
+    output.articleNo=text(details.sku);
+    output.evidence.articleNo=quoteFor(['产品货号','货号'],[details.sku]);
+  }
+  if(text(details.shopName)){
+    output.supplierName=text(details.shopName);
+    output.evidence.supplierName=text(details.shopName);
+  }
+  if(details.priceType!=='tiered'&&Number.isFinite(Number(details.price))&&Number(details.price)>0){
+    output.cost=Number(details.price);
+    const price=String(Number(details.price));
+    const row=attributes.find(value=>/(?:供货价|批价|批发价|SKU规格)/.test(value)&&value.includes(price));
+    output.evidence.cost=row||price;
+  }
+  if(array(details.colors).length){
+    output.colors=array(details.colors).map(text).filter(Boolean);
+    output.evidence.colors=quoteFor(['颜色分类','颜色'],output.colors);
+  }
+  if(array(details.sizes).length){
+    output.sizes=array(details.sizes).map(text).filter(Boolean);
+    output.evidence.sizes=quoteFor(['尺码','尺寸'],output.sizes);
+  }
+  return output;
+}
 function validateSupplierFacts(result,details){
   const document=[details.visibleText,details.description,...array(details.attributes)].join('\n').replace(/\s+/g,'');
   const supported=key=>{const evidence=result.evidence?.[key],quote=text(typeof evidence==='object'?evidence?.quote:evidence).replace(/\s+/g,'');const imageEvidence=evidence&&typeof evidence==='object'&&Number.isInteger(evidence.imageIndex)&&evidence.imageIndex>=0&&evidence.imageIndex<Math.min(3,array(details.images).length)&&array(result.verifiedOcrFields).includes(key);return quote.length>=2&&(document.includes(quote)||imageEvidence);};
@@ -86,4 +118,4 @@ function manualSupplierFacts(input,previous,details){
   const missing=[];if(/羽绒|冲锋衣|防晒衣/.test([previous?.categoryName,details.title].join(' ')))missing.push('对应类别的真实质检报告与洗水唛');
   return{...previous,articleNo,supplierName,cost,colors,sizes,materials,sizePic,fork:input.fork,warehouse:text(input.warehouse),missing,evidence:{...previous?.evidence,manual:{at:new Date().toISOString(),fields:['articleNo','supplierName','cost','colors','sizes','materials','sizePic','fork','warehouse']}}};
 }
-module.exports={validateSupplierFacts,buildPayload,manualSupplierFacts};
+module.exports={mergeStructuredSupplierFacts,validateSupplierFacts,buildPayload,manualSupplierFacts};

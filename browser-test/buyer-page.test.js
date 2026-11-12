@@ -45,3 +45,12 @@ test('四个供应商页面按商品区域读取货号、供货信息、颜色�
     assert.ok(result.visibleText.length>0);
   }
 });
+
+test('淘宝无JSON-LD与og:image时从商品轮播读取高清主图，排除缩略图、店铺图和推荐图',{timeout:15000},async t=>{
+  const browser=await chromium.launch({channel:'chromium',headless:true});t.after(()=>browser.close());const page=await browser.newPage();
+  const main='https://gw.alicdn.com/imgextra/O1CN01TucanoMain.jpg';
+  await page.route('https://item.taobao.com/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:`<title>啄木鸟羽绒马甲男外穿</title><div id="ice-container"><div class="PicGallery-main"><img width="600" height="600" data-zoom-image="${main}" src="https://gw.alicdn.com/imgextra/O1CN01TucanoMain.jpg_80x80.jpg"></div><div class="PicGallery-thumbs"><img width="60" height="60" src="https://gw.alicdn.com/imgextra/O1CN01TucanoThumb.jpg_60x60.jpg"></div></div><div class="shop-logo"><img width="300" height="300" src="https://img.alicdn.com/tfs/TB1SellerLogo.jpg"></div><div class="recommend"><img width="600" height="600" src="https://gw.alicdn.com/imgextra/O1CN01recommend.jpg"></div>`}));
+  await page.goto('https://item.taobao.com/item.htm?id=656532430996');
+  const result=await page.evaluate(scrapeBuyerPage,{platform:'taobao'});
+  assert.equal(result.title,'啄木鸟羽绒马甲男外穿');assert.deepEqual(result.images,[main]);assert.equal(result.quality.state,'complete');assert.equal(result.quality.missingFields.length,0);
+});

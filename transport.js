@@ -41,7 +41,7 @@ globalThis.FindTransport = (() => {
       chrome.tabs.update(tabId, { url }).catch(fail);
     });
   }
-  const batchTimeout = 75000;
+  const batchTimeout = 110000;
   function cancel() {
     const activeBatch = batch;
     const activeCurrent = current;
@@ -56,7 +56,7 @@ globalThis.FindTransport = (() => {
     }
     if (activeBatch) {
       cleanup.push(...activeBatch.tabs.map(tabId => chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: id => {
-        const job = window.__findPlatformJobs?.[id]; if (job) { job.cancelled = true; job.aborts.forEach(fn => fn()); }
+        const job = window.__findPlatformJobs?.[id]; if (job) { if(job.cancel)job.cancel();else{job.cancelled = true; job.aborts.forEach(fn => fn());} }
       }, args: [activeBatch.id] })));
       cleanup.push(...[...activeBatch.ownedTabs].map(tabId => chrome.tabs.remove(tabId).catch(() => {})));
     }
@@ -209,7 +209,7 @@ globalThis.FindTransport = (() => {
           throw error;
         }
       }
-      progress('platform_search', key === 'qcc' ? '青创网已发送上传/搜图请求，等待页面回调（最多约 25 秒）…' : key === 'e3hui' ? '衣衫汇正在上传图片并打开官方结果页…' : '调用平台图片搜索接口');
+      progress('platform_search', key === 'qcc' ? '青创网上传后等待同一次搜图返回（最多约 45 秒，不重复提交）…' : key === 'e3hui' ? '衣衫汇正在上传图片并打开官方结果页…' : '调用平台图片搜索接口');
       let result;
       if (key === 'e3hui') {
         e3FlowStage = 'image_upload';
@@ -317,7 +317,7 @@ globalThis.FindTransport = (() => {
         }
         })),
         cancelled,
-        new Promise((_, reject) => { timeoutId = setTimeout(() => reject(new Error('search_timeout：并行平台搜索超过 75 秒，已停止等待并保留已返回结果')), batchTimeout); })
+        new Promise((_, reject) => { timeoutId = setTimeout(() => reject(new Error('search_timeout：并行平台搜索超过 110 秒，已停止等待并保留已返回结果')), batchTimeout); })
       ]).catch(error => {
         job.cancelled = true;
         if (String(error?.message || error).startsWith('search_timeout')) void cancel();

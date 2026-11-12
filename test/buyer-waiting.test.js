@@ -21,6 +21,18 @@ async function setup(t,expectedExtensionVersion=''){
   return{workflow,bridge,engine,providers,task:workflow.task(created.id),advance:ms=>t.mock.timers.tick(ms),local};
 }
 
+test('处理中和等待原因变化立即同步对应表行，等待轮询不重复回写',async t=>{
+  const {engine,providers,task}=await setup(t),updates=[];
+  providers.onTaskUpdated=async current=>updates.push({id:current.id,state:current.automation.state,reason:current.automation.waitingReason});
+  await engine.result(task,'读取来源',async()=>({waiting:true,reason:'浏览器正在读取来源图片'}));
+  assert.deepEqual(updates.map(row=>row.state),['running','waiting']);
+  assert.ok(updates.every(row=>row.id===task.id));
+  await engine.result(task,'读取来源',async()=>({waiting:true,reason:'浏览器正在读取来源图片'}));
+  assert.equal(updates.length,2,'相同等待原因不反复写回或产生编辑冲突');
+  await engine.result(task,'读取来源',async()=>({waiting:true,reason:'等待商品主图加载'}));
+  assert.equal(updates.length,3);assert.equal(updates[2].reason,'等待商品主图加载');
+});
+
 test('来源等待明确显示插件未连接；超时释放命令，重试原任务可收到新回执并推进',async t=>{
   const {workflow,bridge,engine,providers,task,advance,local}=await setup(t);
   await engine.step(task);

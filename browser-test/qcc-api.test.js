@@ -76,3 +76,48 @@ test('青创精确字段契约：接口优先不依赖模板、原图与标签�
     await context.close(); fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
+
+test('青创慢回调和原生回调丢失时读取同一次请求，超时和失败不重复搜图且清理监听', { timeout: 15000 }, async () => {
+  const profile=fs.mkdtempSync(path.join(os.tmpdir(),'qcc-response-recovery-'));
+  const context=await launchPersistentContext(profile,{headless:true});
+  try{
+    await context.route('https://**/*',route=>route.fulfill({contentType:'text/html',body:'<html><body></body></html>'}));
+    const page=await context.newPage();await page.goto('https://www.17qcc.com/imagesearch.html');await page.addScriptTag({content:source});
+    const results=await page.evaluate(async()=>{
+      const canvas=document.createElement('canvas');canvas.width=640;canvas.height=800;const image=canvas.toDataURL('image/png');
+      const nativeTimeout=window.setTimeout.bind(window),listeners=new Map();
+      window.setTimeout=(fn,ms,...args)=>nativeTimeout(fn,ms>=25000?ms/100:ms,...args);
+      const events={on(name,fn){listeners.set(name,fn);return this;},off(namespace){for(const name of listeners.keys())if(name.endsWith(namespace))listeners.delete(name);return this;}};
+      const response={Success:true,Result:{Items:[{ProductId:42,ProductName:'回收同次响应的外套',ProductNo:'Q42',DefaultPrice:145,Photo:'/fixture.jpg'}]}};
+      window.cfgPage={ImgSearchChannel:7};let uploads=0,searches=0;
+      const jquery=()=>events;jquery.cookie=()=> 'fixture-auth';jquery.ajax=options=>{uploads++;options.success({Result:{FileFullPath:'https://pics.17qcc.com/query.jpg'}});return{abort(){}};};window.jQuery=jquery;
+      const emit=(request,settings)=>{for(const fn of [...listeners.values()])fn({},request,settings);};
+      jquery.qccAjax=(_url,_params,callback)=>{searches++;nativeTimeout(()=>callback(response),350);};
+      const slow=await searchPlatformPage('qcc',image,'slow-callback');
+      jquery.qccAjax=(url,data)=>{searches++;nativeTimeout(()=>{
+        emit({status:200,responseJSON:{...response,Result:{Items:[]}}},{url,data:{...data,ImgUrl:'/another-image.jpg'}});
+        emit({status:200,responseJSON:response},{url,data:new URLSearchParams(data).toString()});
+      },10);};
+      const recovered=await searchPlatformPage('qcc',image,'lost-callback');
+      jquery.qccAjax=(url,data)=>{searches++;nativeTimeout(()=>emit({status:200,responseText:JSON.stringify(response)},{url,data:JSON.stringify(data)}),10);};
+      const jsonBody=await searchPlatformPage('qcc',image,'json-request');
+      jquery.qccAjax=(url,data)=>{searches++;nativeTimeout(()=>emit({status:503,statusText:'Unavailable'},{url,data}),10);};
+      const failed=await searchPlatformPage('qcc',image,'http-failure');
+      jquery.qccAjax=()=>{searches++;};
+      const timeout=await searchPlatformPage('qcc',image,'no-response');
+      jquery.qccAjax=()=>{searches++;nativeTimeout(()=>window.__findPlatformJobs['cancelled-search']?.cancel(),10);};
+      const cancelled=await searchPlatformPage('qcc',image,'cancelled-search');
+      return{slow,recovered,jsonBody,failed,timeout,cancelled,uploads,searches,listeners:listeners.size,jobs:Object.keys(window.__findPlatformJobs).length};
+    });
+    assert.equal(results.slow.ok,true,'超过旧25秒窗口的原回调仍接收');
+    assert.equal(results.slow.diagnostics.searchWaitMs,45000);
+    assert.equal(results.recovered.ok,true);assert.equal(results.recovered.items[0].id,'42');
+    assert.equal(results.recovered.diagnostics.searchCallbackSource,'same_request.ajaxComplete');
+    assert.equal(results.jsonBody.ok,true);assert.equal(results.jsonBody.items[0].id,'42');
+    assert.equal(results.failed.ok,false);assert.match(results.failed.error,/HTTP 503/);
+    assert.equal(results.timeout.ok,false);assert.equal(results.timeout.diagnostics.retryable,false);assert.match(results.timeout.error,/45 秒/);
+    assert.equal(results.cancelled.ok,false);assert.match(results.cancelled.error,/request_cancelled/);
+    assert.equal(results.uploads,6);assert.equal(results.searches,6,'每次操作只上传一次、搜图一次，不重放不确定请求');
+    assert.equal(results.listeners,0);assert.equal(results.jobs,0);
+  }finally{await context.close();fs.rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
+});
