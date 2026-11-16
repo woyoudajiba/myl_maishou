@@ -70,6 +70,17 @@ export function prepareDraftAttempt(payload, key = randomUUID()) {
   return Object.freeze({ key, body: JSON.stringify(payload), contractVersion: ERP_CONTRACT_VERSION });
 }
 
+// Direct product saves do not have a documented server idempotency guarantee.
+// The key identifies a local journal only; an attempted request must be read
+// back by its complete product code, never replayed automatically.
+export function prepareProductAttempt(payload, key = randomUUID()) {
+  if (!present(key) || key.length > 64 || /[\r\n]/.test(key)) throw new Error('本机提交检查点编号无效');
+  const errors = validateDraftPayload(payload);
+  if(!present(payload.company))errors.push('缺少 company');
+  if (errors.length) throw new Error(`待审核商品资料未就绪：${errors.join('；')}`);
+  return Object.freeze({ key, body: JSON.stringify(payload), contractVersion: ERP_CONTRACT_VERSION, mode: 'direct_pending', productNo: [payload.storeHouse, payload.productType, payload.supplierAb, payload.articleNo].join('-') });
+}
+
 export const additionFields = new Set([
   'articleNo','productType','productTypeName','storeHouse','supplierName','supplierAb','pallet','costPlus','payment','platformPrice','colors','industry',
   'supplyCycle','recPlatform','sizeType','sizeCategory','material','materialRate','sizePic','season','style','unit','technology','marketTime','recommendedStore',
@@ -92,7 +103,7 @@ export function validateDraftPayload(p) {
   else { const rates = p.materialRate.map(v => typeof v === 'string' && /^\d+(\.\d+)?$/.test(v) ? Number(v) : NaN); if (rates.some(v => !Number.isFinite(v) || v < 0 || v > 100) || Math.abs(rates.reduce((a,b)=>a+b,0) - 100) > 1e-7) errors.push('材质比例合计必须为 100'); }
   if (!present(p.sizePic)) errors.push('缺少尺码参考图');
   if (!present(p.buyerName)) errors.push('缺少登录买手身份');
-  for (const key of ['industry','season','technology','style','ageState']) if (!present(p[key])) errors.push(`缺少 ${key}`);
+  for (const key of ['industry','season','style','ageState']) if (!present(p[key])) errors.push(`缺少 ${key}`);
   if (typeof p.talkCost !== 'number' || !Number.isFinite(p.talkCost) || p.talkCost <= 0 || p.talkCost > 1000) errors.push('买手成本须大于 0 且不超过 1000');
   if (!Number.isInteger(p.supplyCycle) || p.supplyCycle < 1 || p.supplyCycle > 120) errors.push('供货周期须为 1–120 的整数');
   if (p.platformPrice !== null && p.platformPrice !== undefined && (typeof p.platformPrice !== 'number' || !Number.isFinite(p.platformPrice) || p.platformPrice < 0 || p.platformPrice >= 100000000 || Math.abs(Math.round(p.platformPrice * 100) - p.platformPrice * 100) > 1e-6)) errors.push('平台价须非负、最多 8 位整数与 2 位小数');

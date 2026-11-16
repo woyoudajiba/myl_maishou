@@ -1,4 +1,4 @@
-if (typeof importScripts === 'function') importScripts('vision-protocol.js', 'vision-background.js', 'platform-login.js', 'taobao-search.js','buyer-page.js');
+if (typeof importScripts === 'function') importScripts('taobao-sales.js', 'vision-protocol.js', 'vision-background.js', 'platform-login.js', 'taobao-search.js','buyer-page.js');
 
 async function openWorkbench() {
   const url = chrome.runtime.getURL('workbench.html');
@@ -136,9 +136,48 @@ async function deliverDouyinSearch(pair, command) {
 }
 async function deliverTaobaoImageSearch(pair, command) {
   if (!command.imageData) throw new Error('淘宝图搜任务缺少商品原图');
-  const candidates=await FindTaobaoImageSearch.search(command.imageData);
+  let candidates;
+  try{candidates=await FindTaobaoImageSearch.search(command.imageData);}
+  catch(error){
+    if(error.code==='TAOBAO_VERIFICATION_REQUIRED'){
+      try{error.recovery=await openTaobaoVerification(command.buyerTaskId,error.verificationUrl,true);error.message=error.recovery.page==='verification'?'淘宝图搜需要安全验证，已在插件所在浏览器打开验证页；完成后回软件点击“继续原任务”':'淘宝图搜被安全验证拦截，但接口未返回可用验证链接；已打开淘宝搜图页，请在该页手动搜图完成验证后继续原任务';}
+      catch{error.message='淘宝图搜需要安全验证，但验证页面未能打开；请点击任务中的“打开淘宝验证页”重试';error.recovery={kind:'taobao_verification',opened:false,page:'unavailable'};}
+    }
+    throw error;
+  }
   if(!candidates.length)throw new Error('淘宝图搜没有返回有效商品链接，请换清晰主图后重试');
   await desktopFetch(pair, `/v1/browser-commands/${command.id}/ack`, {method:'POST',body:JSON.stringify({status:'accepted',candidates})});
+}
+function officialTaobaoPage(value){
+  try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password&&!url.port&&/(^|\.)(?:taobao|tmall)\.com$/i.test(url.hostname)?url.href:'';}catch{return '';}
+}
+async function openTaobaoVerification(taskId,challengeUrl='',fresh=false){
+  if(!/^[\da-f-]{36}$/i.test(taskId||''))throw new Error('淘宝验证任务无效');
+  const key='productComparisonTaobaoVerification',now=Date.now();
+  const stored=(await chrome.storage.session.get(key))[key]||{};
+  const entries=Object.fromEntries(Object.entries(stored).filter(([,entry])=>entry&&entry.expiresAt>now).slice(-19));
+  const previous=entries[taskId],newUrl=officialTaobaoPage(challengeUrl);
+  const target=newUrl||(!fresh&&officialTaobaoPage(previous?.url))||'https://s.taobao.com/search';
+  const page=newUrl||!fresh&&previous?.page==='verification'&&officialTaobaoPage(previous?.url)?'verification':'image_search';
+  // Keep the full short-lived challenge URL only in extension session storage.
+  // A desktop command carries the task ID, never the signed challenge URL.
+  entries[taskId]={url:target,page,expiresAt:now+30*60*1000};
+  await chrome.storage.session.set({[key]:entries});
+  let tab;
+  if(Number.isInteger(previous?.tabId)){
+    const existing=await chrome.tabs.get(previous.tabId).catch(()=>null);
+    const currentUrl=officialTaobaoPage(existing?.pendingUrl||existing?.url);
+    if(existing&&currentUrl)tab=await chrome.tabs.update(existing.id,{active:true,...(fresh||currentUrl!==target?{url:target}:{})}).catch(()=>null);
+  }
+  if(!tab)tab=await chrome.tabs.create({url:target,active:true});
+  entries[taskId].tabId=tab.id;
+  await chrome.storage.session.set({[key]:entries});
+  if(Number.isInteger(tab.windowId))await chrome.windows.update(tab.windowId,{focused:true}).catch(()=>{});
+  return{kind:'taobao_verification',opened:true,page};
+}
+async function deliverTaobaoVerification(pair,command){
+  const recovery=await openTaobaoVerification(command.buyerTaskId);
+  await desktopFetch(pair,`/v1/browser-commands/${command.id}/ack`,{method:'POST',body:JSON.stringify({status:'accepted',recovery})});
 }
 async function collectBuyerSource(pair,command){
   const config={taobao:['taobao.com','tmall.com'],douyin:['douyin.com','jinritemai.com'],wsy:['wsy.com'],zwd:['17zwd.com'],qcc:['17qcc.com'],e3hui:['e3hui.com','e3hui.cn']};
@@ -193,14 +232,15 @@ async function pollDesktopCommands() {
       try { command = (await desktopFetch(pair, '/v1/browser-commands/next')).command; } catch { return; }
       if (!command) return;
       try {
-        if(command.kind==='buyer-source')await collectBuyerSource(pair,command);
+        if(command.kind==='taobao-verification')await deliverTaobaoVerification(pair,command);
+        else if(command.kind==='buyer-source')await collectBuyerSource(pair,command);
         else if(command.kind==='buyer-supplier-search')await searchBuyerSuppliers(pair,command);
         else if(command.kind==='taobao-image-search') await deliverTaobaoImageSearch(pair,command);
         else if (['douyin-search','product-search'].includes(command.kind) && command.imageData) await deliverDouyinSearch(pair, command);
         else if (command.kind === 'product-details') await collectProductDetails(pair, command);
         else throw new Error('浏览器任务类型无效');
       } catch (error) {
-        await desktopFetch(pair, `/v1/browser-commands/${command.id}/ack`, { method: 'POST', body: JSON.stringify({ status: 'failed', error: String(error.message || error).slice(0, 180) }) }).catch(() => {});
+        await desktopFetch(pair, `/v1/browser-commands/${command.id}/ack`, { method: 'POST', body: JSON.stringify({ status: 'failed', error: String(error.message || error).slice(0, 180),...(error.recovery?{recovery:error.recovery}:{}) }) }).catch(() => {});
       }
     }
     setTimeout(() => { void pollDesktopCommands(); },1000);

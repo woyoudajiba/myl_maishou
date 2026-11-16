@@ -12,6 +12,12 @@ test('真实响应夹具映射字段；实际收到数量与平台总量分开',
   assert.equal(parsed.items[0].price, 60); assert.equal(parsed.items[0].supplierId, '2834466');
   assert.equal(parsed.items[0].similarity, .97); assert.equal(parsed.items[0].similaritySource, 'platform');
 });
+test('网商园候选保留平台返回的发货地字段', () => {
+  const item = core.parseWsy({ code: 1, list: [{ mid: 1, goodsid: 'D2603', price: 42, imgUrl: 'https://img.wsy.com/a.jpg', address: '江苏苏州' }] }).items[0];
+  assert.equal(item.address, '江苏苏州');
+  const fallback = core.parseWsy({ code: 1, list: [{ mid: 2, price: 42, imgUrl: 'https://img.wsy.com/b.jpg', shippingAddress: '浙江杭州' }] }).items[0];
+  assert.equal(fallback.address, '浙江杭州');
+});
 test('无成本不按价格和相似度淘汰；没有确定同款标签', () => {
   const parsed = core.parseWsy(fixture);
   const result = core.evaluate(parsed.items, { mode: 'select', baseline: 1, reduction: 5 });

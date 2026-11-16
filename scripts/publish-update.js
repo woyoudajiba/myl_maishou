@@ -35,7 +35,8 @@ const proof = JSON.parse(fs.readFileSync(proofFile, 'utf8'));
 if (proof.version !== version || proof.updateVersion !== canonical || proof.installerSha256 !== sha(installerFile)
   || proof.extensionSha256 !== sha(archive) || proof.metadataSha256 !== sha(path.join(release, 'latest.yml'))
   || proof.startup?.version !== canonical || proof.startup?.packaged !== true || proof.startup?.loginVisible !== true
-  || proof.startup?.modelRetryLoaded !== true || proof.startup?.buyerProvidersLoaded !== true || proof.startup?.rendererErrors?.length !== 0) {
+  || proof.startup?.modelRetryLoaded !== true || proof.startup?.buyerProvidersLoaded !== true || proof.startup?.buyerMappingLoaded !== true || proof.startup?.buyerDraftViewLoaded !== true
+  || proof.startup?.buyerDraftUiLoaded !== true || proof.startup?.rendererErrors?.length !== 0) {
   throw new Error('打包EXE启动验收或产物哈希不一致，停止发布');
 }
 const manifest = { version, files: publicFiles.map(name => ({ name, sha256: sha(path.join(release, name)) })), metadataSha256: sha(path.join(release, 'latest.yml')) };

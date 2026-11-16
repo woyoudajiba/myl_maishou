@@ -5,7 +5,8 @@ globalThis.FindTransport = (() => {
     wsy: { name: '网商园', mode: 'automatic', url: 'https://www.wsy.com/new/search/image', matches: ['https://www.wsy.com/*', 'https://wsy.com/*'] },
     zwd: { name: '17网', mode: 'automatic', url: 'https://stu.17zwd.com/SearchSimilar', matches: ['https://stu.17zwd.com/*'] },
     qcc: { name: '青创网', mode: 'automatic', url: 'https://www.17qcc.com/imagesearch.html', matches: ['https://www.17qcc.com/*'] },
-    e3hui: { name: '衣衫汇', mode: 'automatic', url: 'https://www.e3hui.cn/', matches: ['https://www.e3hui.cn/*', 'https://www.e3hui.com/*'] }
+    e3hui: { name: '衣衫汇', mode: 'automatic', url: 'https://www.e3hui.cn/', matches: ['https://www.e3hui.cn/*', 'https://www.e3hui.com/*'] },
+    taobao: { name: '淘宝', mode: 'connection_only', diagnosticOnly: true, url: 'https://www.taobao.com/', matches: ['https://www.taobao.com/*', 'https://item.taobao.com/*', 'https://*.taobao.com/*', 'https://*.tmall.com/*'] }
   };
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
   async function ensureSession(tabId, platform) {
@@ -42,6 +43,7 @@ globalThis.FindTransport = (() => {
     });
   }
   const batchTimeout = 110000;
+  const limitItems = (items, mode) => mode === 'detail' ? items : (Array.isArray(items) ? items.slice(0, 25) : []);
   function cancel() {
     const activeBatch = batch;
     const activeCurrent = current;
@@ -287,9 +289,10 @@ globalThis.FindTransport = (() => {
       throw error;
     }
   }
-  async function searchAll(base64, requestId, selected, update) {
+  async function searchAll(base64, requestId, selected, update, options = {}) {
     if (batch || current) throw new Error('request_busy：已有搜索进行中');
-    const keys = [...new Set(selected)].filter(key => platforms[key]);
+    const topMode = options.mode !== 'detail';
+    const keys = [...new Set(selected)].filter(key => platforms[key] && !platforms[key].diagnosticOnly);
     if (!keys.length) throw new Error('input：至少选择一个平台');
     const job = { id: requestId, tabs: [], ownedTabs: new Set(), cancelled: false };
     let rejectCancel;
@@ -305,11 +308,12 @@ globalThis.FindTransport = (() => {
           if (job.cancelled) throw new Error('request_cancelled：请求已取消');
           if (result.assisted) { update(key, result); return { key, ...result }; }
           const partial = result.partial === true;
+          const limitedItems = limitItems(result.items, topMode ? 'top' : 'detail');
           const failedGroups = result.diagnostics?.searchGroups?.filter(group => group.phase === 'failed') || [];
           const groupSummary = result.diagnostics?.searchGroups?.map(group => `${group.type === 'accurate' ? '准确搜' : '相似搜'} ${group.phase === 'complete' ? group.received : '失败'}`).join('，');
-          const record = { ...result, phase: partial ? 'partial' : 'complete', message: partial
-            ? `部分检索完成，收到 ${result.items.length} 条；${groupSummary || failedGroups.map(group => `${group.type}失败`).join('、')}`
-            : `实际收到 ${result.items.length} 条${groupSummary ? `（${groupSummary}）` : ''}` };
+          const record = { ...result, items: limitedItems, topMode, phase: partial ? 'partial' : 'complete', message: partial
+            ? `部分检索完成，保留 ${limitedItems.length} 条；${groupSummary || failedGroups.map(group => `${group.type}失败`).join('、')}`
+            : `实际收到 ${limitedItems.length} 条${topMode ? '（Top 搜索：每个平台前25条）' : ''}${groupSummary ? `（${groupSummary}）` : ''}` };
           update(key, record); return { key, ...record };
         } catch (error) {
           const record = { phase: 'failed', message: error.message, items: [], total: null, diagnostics: error.diagnostics || null, ...(Number.isInteger(error.openTabId) ? { openTabId: error.openTabId } : {}) };
@@ -324,8 +328,8 @@ globalThis.FindTransport = (() => {
         throw error;
       }).finally(() => clearTimeout(timeoutId));
       if (job.cancelled) throw new Error('request_cancelled：请求已取消');
-      return { items: records.flatMap(r => r.items), records };
+      return { items: records.flatMap(r => r.items), records, mode: topMode ? 'top' : 'detail' };
     } finally { if (batch === job) batch = null; }
   }
-  return { search, searchAll, cancel, platforms };
+  return { search, searchAll, cancel, platforms, limitItems };
 })();

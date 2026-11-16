@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 // Shared by the installer and the in-app exporter. Never copy the repository,
 // dependency folders, local accounts, or model keys into a browser extension.
 const extensionFiles = Object.freeze([
-  'platform-login.js', 'taobao-search.js', 'buyer-page.js',
+  'taobao-sales.js', 'platform-login.js', 'taobao-search.js', 'buyer-page.js',
   'manifest.json', 'background.js', 'connection-check.js', 'core.js', 'platform-page.js',
   'review.css', 'review.js', 'review-ui.js', 'similarity-worker.js', 'similarity.js',
   'transport.js', 'vision-background.js', 'vision-client.js', 'vision-protocol.js', 'image-policy.js', 'vision-queue.js',

@@ -5,9 +5,10 @@ const errorText = error => String(error?.message || error).replace(/^Error invok
 const comparisonError = message => String(message || '').includes('HTTP 504') ? 'HTTP 504：模型网关等待上游超时，本批未取得结果；可逐张重试' : String(message || '');
 const notify = text => { $('notice').textContent = text; $('notice').hidden = !text; };
 function showPage(value) {
-  const page = ['work','settings','updates', 'help', 'douyin', 'buyer'].includes(value) ? value : value ? 'settings' : 'work';
+  if(value==='drafts'&&$('navDrafts').hidden)value='buyer';
+  const page = ['work','settings','updates', 'help', 'douyin', 'buyer','drafts'].includes(value) ? value : value ? 'settings' : 'work';
   sessionStorage.setItem('product-comparison-view',page);
-  for (const [key, label] of [['work', '识别记录'], ['buyer', '买手工作台'], ['douyin', '抖音主图'], ['settings', '设置'], ['updates', '软件更新'], ['help', '使用说明']]) {
+  for (const [key, label] of [['work', '识别记录'], ['buyer', '买手工作台'], ['drafts','互拓草稿箱'], ['douyin', '抖音主图'], ['settings', '设置'], ['updates', '软件更新'], ['help', '使用说明']]) {
     $(key + 'Page').hidden = page !== key;
     const nav = $('nav' + key[0].toUpperCase() + key.slice(1));
     nav.classList.toggle('active', page === key);
@@ -26,7 +27,7 @@ window.openBuyerComparisonJob = async (jobId, itemIndex = null) => {
     if (article) {
       const job = snapshot?.jobs.find(row => row.id === jobId);
       const ranked = (job?.items || []).map((item,index)=>({item,index})).filter(({item})=>FindReview.comparison(item))
-        .sort((a,b)=>(FindReview.rankingScore(b.item)??-1)-(FindReview.rankingScore(a.item)??-1)||a.index-b.index);
+        .sort((a,b)=>FindReview.compare(a.item,b.item)||a.index-b.index);
       const targetIndex = Number.isInteger(itemIndex) && job?.items[itemIndex] ? itemIndex : ranked[0]?.index;
       filters.set(jobId,'all'); platforms.set(jobId,'all'); if(job)limits.set(jobId,job.items.length); rendered='';
       await refresh();
@@ -49,7 +50,7 @@ function platformSearchRows(job) {
   const candidates = new Map();
   for (const item of job.items || []) candidates.set(item.platform, (candidates.get(item.platform) || 0) + 1);
   const recorded = new Map((Array.isArray(job.platformSearches) ? job.platformSearches : []).map(row => [row.platform, row]));
-  const keys = ['wsy', 'zwd', 'qcc', 'e3hui', ...(candidates.has('taobao') ? ['taobao'] : [])];
+  const keys = candidates.size===1&&candidates.has('taobao')?['taobao']:['wsy', 'zwd', 'qcc', 'e3hui', ...(candidates.has('taobao') ? ['taobao'] : [])];
   return keys.map(platform => {
     const row = recorded.get(platform);
     const received = row ? row.receivedCount : candidates.get(platform) || 0;
@@ -78,6 +79,7 @@ async function refresh() {
   FindHelpUI.render(snapshot);
   FindDouyinUI.render(snapshot);
   BuyerAutoUI.render(snapshot);
+  window.BuyerDraftUI?.render(snapshot);
   if (!snapshot.authenticated) {
     if(previousUser)sessionStorage.removeItem('product-comparison-view');
     BuyerUI.render(snapshot);
@@ -111,7 +113,7 @@ async function refresh() {
   const platformAccountsNext = JSON.stringify(snapshot.platformAccounts || []);
   if (platformAccountsNext !== platformAccountsRendered) {
     platformAccountsRendered = platformAccountsNext;
-    $('platformAccountList').innerHTML = (snapshot.platformAccounts || []).map(account => `<article class="platform-account-card ${account.configured ? 'configured' : ''}" data-platform-account="${esc(account.platform)}"><div><strong>${esc(account.name)}</strong><small>${account.configured ? `账号：${esc(maskAccount(account.username))}` : '尚未设置账号'}</small></div><span class="platform-account-status">${account.configured ? '密码已加密保存' : '未配置'}</span><div class="platform-account-actions"><button type="button" class="edit-platform-account secondary">${account.configured ? '编辑' : '添加'}</button><button type="button" class="delete-platform-account text-button" ${account.configured ? '' : 'disabled'}>删除</button></div></article>`).join('');
+    $('platformAccountList').innerHTML = (snapshot.platformAccounts || []).map(account => `<article class="platform-account-card ${account.configured ? 'configured' : ''}" data-platform-account="${esc(account.platform)}"><div><strong>${esc(account.name)}</strong><small>${account.configured ? `账号：${esc(maskAccount(account.username))}` : '尚未设置账号'}</small></div><span class="platform-account-status">${account.configured ? '密码已加密保存 · 更新后保留' : '未配置'}</span><div class="platform-account-actions"><button type="button" class="edit-platform-account secondary">${account.configured ? '修改' : '添加'}</button><button type="button" class="delete-platform-account text-button" ${account.configured ? '' : 'disabled'}>删除</button></div></article>`).join('');
   }
   BuyerUI.render(snapshot);
   const next = JSON.stringify(snapshot.jobs) + JSON.stringify(snapshot.browserCommands || []) + JSON.stringify([...filters]) + JSON.stringify([...platforms]) + JSON.stringify([...limits]) + JSON.stringify([...retryingJobs]);
@@ -135,10 +137,12 @@ async function refresh() {
     const rows = filtered.slice(0, limit).map(({ item, index }) => {
       const human = FindReview.decision(item);
       const stage = item.searchGroup === 'accurate' ? '准确搜' : item.searchGroup === 'similar' ? '相似搜' : item.platform === 'taobao' ? '淘宝套图' : '图片搜款';
-      return `<div class="result-row" data-index="${index}"><button class="view-image text-button" data-index="${index}" aria-label="放大商品图片"><img src="${esc(item.imageEvidence?.sourceUrl || item.imageUrl)}" alt="商品图片" loading="lazy" referrerpolicy="no-referrer"><small>放大查看</small></button><div><strong>${esc(item.goodsId || item.title || '未命名商品')}</strong><span class="result-tags"><span class="source-tag">${esc(platformName(item.platform))}</span><span class="source-tag search-source">${stage}</span></span><span>${esc(item.title || '')} · ${item.price == null ? '价格未知' : `¥${esc(item.price)}`}</span><span class="review-state ${human ? 'reviewed' : ''}">${esc(FindReview.status(item, job.reviewMode))}</span>${item.visualComparison ? `<span>模型建议：${esc(FindReview.labels[item.visualComparison.verdict] || "无法判断")}</span>` : ""}${item.visualComparison ? `<span class="match-score">${esc(FindReview.scoreStatus(item, job.reviewMode))}${FindReview.belowThreshold(item, job.items) ? ` · ${FindReview.thresholdText(scoreThreshold)}，已排除` : ''}</span>` : ''}<span>${item.imageEvidence ? `来源 ${esc(item.imageEvidence.sourceWidth)}×${esc(item.imageEvidence.sourceHeight)} · 送模 ${esc(item.imageEvidence.width)}×${esc(item.imageEvidence.height)}` : item.visualComparison ? '旧任务：未记录送模图片，建议用高清图重比' : ''}</span>${item.platformTags?.length ? '<span>'+esc(item.platformTags.join(' · '))+'</span>' : ''}${human?.note ? `<span>审核备注：${esc(human.note)}</span>` : ''}${item.visualComparison ? `<span>吻合：${esc((item.visualComparison.matches || []).join('；') || '无')}<br>差异：${esc((item.visualComparison.differences || []).join('；') || '无')}<br>待核实：${esc((item.visualComparison.uncertainties || []).join('；') || '无')}</span><button class="review-item secondary" data-index="${index}" ${locked ? 'disabled' : ''}>${human ? '查看 / 修改审核' : '人工核对'}</button>` : `<span>${esc(comparisonError(item.imageSimilarityError))}</span>`}</div></div>`;
+      return `<div class="result-row" data-index="${index}"><button class="view-image text-button" data-index="${index}" aria-label="放大商品图片"><img src="${esc(item.imageEvidence?.sourceUrl || item.imageUrl)}" alt="商品图片" loading="lazy" referrerpolicy="no-referrer"><small>放大查看</small></button><div><strong>${esc(item.platform==='taobao'?(item.title||'淘宝商品'):(item.goodsId || item.title || '未命名商品'))}</strong><span class="result-tags"><span class="source-tag">${esc(platformName(item.platform))}</span><span class="source-tag search-source">${stage}</span></span><span>${esc(item.title || '')} · ${item.price == null ? '价格未知' : `¥${esc(item.price)}`}</span>${item.platform==='taobao'?`<span>销量：${esc(TaobaoSales.label(item))}</span>`:''}<span class="review-state ${human ? 'reviewed' : ''}">${esc(FindReview.status(item, job.reviewMode))}</span>${item.visualComparison ? `<span>模型建议：${esc(FindReview.labels[item.visualComparison.verdict] || "无法判断")}</span>` : ""}${item.visualComparison ? `<span class="match-score">${esc(FindReview.scoreStatus(item, job.reviewMode))}${FindReview.belowThreshold(item, job.items) ? ` · ${FindReview.thresholdText(scoreThreshold)}，已排除` : ''}</span>` : ''}<span>${item.imageEvidence ? `来源 ${esc(item.imageEvidence.sourceWidth)}×${esc(item.imageEvidence.sourceHeight)} · 送模 ${esc(item.imageEvidence.width)}×${esc(item.imageEvidence.height)}` : item.visualComparison ? '旧任务：未记录送模图片，建议用高清图重比' : ''}</span>${item.platformTags?.length ? '<span>'+esc(item.platformTags.join(' · '))+'</span>' : ''}${human?.note ? `<span>审核备注：${esc(human.note)}</span>` : ''}${item.visualComparison ? `<span>吻合：${esc((item.visualComparison.matches || []).join('；') || '无')}<br>差异：${esc((item.visualComparison.differences || []).join('；') || '无')}<br>待核实：${esc((item.visualComparison.uncertainties || []).join('；') || '无')}</span><button class="review-item secondary" data-index="${index}" ${locked ? 'disabled' : ''}>${human ? '查看 / 修改审核' : '人工核对'}</button>` : `<span>${esc(comparisonError(item.imageSimilarityError))}</span>`}</div></div>`;
     }).join('');
     const counts = job.reviewSummary || FindReview.summary(job.items, job.reviewMode);
-    const priceGroups=FindReview.highSimilarityPriceGroups(job.items);
+    const priceGroups=FindReview.highSimilarityPriceGroups(job.items.filter(item=>item.platform!=='taobao'));
+    const taobaoItems=job.items.map((item,index)=>({item,index})).filter(({item})=>item.platform==='taobao').sort((a,b)=>FindReview.compareTaobao(a.item,b.item)||a.index-b.index);
+    const taobaoComparison=taobaoItems.length?`<section class="price-comparison-summary taobao-comparison-summary"><h3>淘宝候选 · 85分及以上优先（${taobaoItems.length} 条）</h3><small>人工已确认的同款优先；模型建议为同款或相似款且匹配分达到85分的候选排在前面，同组按销量降序。明确不同款和人工排除项放在后面；销量和价格不作为同款依据。</small><div class="price-comparison-scroll"><table class="price-comparison-table taobao-comparison-table"><thead><tr><th>商品图片</th><th>店铺 / 商品</th><th>销量</th><th>价格</th><th>模型建议 / 人工确认</th></tr></thead><tbody>${taobaoItems.slice(0,limit).map(({item,index})=>`<tr data-taobao-index="${index}"><td><button type="button" class="view-image text-button" data-index="${index}"><img src="${esc(item.imageEvidence?.sourceUrl||item.imageUrl)}" alt="淘宝候选商品图" loading="lazy" referrerpolicy="no-referrer"><small>放大查看</small></button></td><td><strong>${esc(item.shopName||'店铺名未采集')}</strong><small>${esc(item.title||'')}</small></td><td class="taobao-sales">${esc(TaobaoSales.label(item))}</td><td>${item.price==null?'未采集':'¥'+esc(item.price)}</td><td><small>${esc(FindReview.status(item,job.reviewMode))}</small>${item.visualComparison?`<small>${esc(FindReview.labels[item.visualComparison.verdict])} · ${esc(FindReview.scoreText(FindReview.modelScore(item)))}</small><button type="button" class="secondary review-item" data-index="${index}" ${locked?'disabled':''}>看图人工确认</button>`:'<small>等待模型对比</small>'}<button type="button" class="secondary open-product-detail" data-index="${index}">打开淘宝商品链接</button></td></tr>`).join('')}</tbody></table></div>${taobaoItems.length>limit?'<button type="button" class="secondary show-more">再显示 8 条淘宝候选</button>':''}</section>`:'';
     const priceComparison=priceGroups.length?`<section class="price-comparison-summary"><h3>高相似候选价格参考（${priceGroups[0].items.length} 条）</h3><small>本批匹配分 ≥ 90 且模型建议为同款或相似款的候选，按候选列表价升序排列；货号可能不同。价格不是详情供货价，模型建议仍待人工核对，不代表已确认同款。</small><div class="price-comparison-scroll"><table class="price-comparison-table"><thead><tr><th>货号</th><th>平台 / 商品</th><th>候选列表价</th><th>模型建议 / 链接</th></tr></thead><tbody>${priceGroups.map(group=>group.items.map(row=>{const index=job.items.indexOf(row.item);return`<tr><td>${esc(row.item.goodsId||'货号未采集')}</td><td><strong>${esc(platformName(row.item.platform))}</strong><small>${esc(row.item.shopName||'店铺名待采集')}</small><small>${esc(row.item.title||'')}</small></td><td><strong>¥${esc(row.price)}</strong></td><td><small>${esc(FindReview.labels[row.item.visualComparison?.verdict]||'无法判断')} · ${esc(row.score)}/100 · ${esc(FindReview.status(row.item,job.reviewMode))}</small><button type="button" class="secondary open-product-detail" data-index="${index}">打开${esc(platformName(row.item.platform))}商品链接</button></td></tr>`;}).join('')).join('')}</tbody></table></div></section>`:'';
     const platformRows = platformSearchRows(job);
     const platformSummary = platformRows.map(row => {
@@ -147,12 +151,13 @@ async function refresh() {
       return `<div class="platform-search-row"><strong>${esc(platformName(row.platform))}</strong><span class="platform-search-phase ${row.phase}">${esc(platformPhases[row.phase] || (row.legacy ? '历史任务未保存统计' : '未收到完成记录'))}</span><span>${row.received===null?'返回数量未保存':`本次收到 ${esc(row.received)} 条候选`}${row.accepted===null?'':` · 可用 ${esc(row.accepted)} 条`} · 本批候选 ${row.submitted} 条 · ${esc(reported)}${esc(groups)}${row.message&&['failed','partial','manual_required'].includes(row.phase)?`<small class="platform-search-reason">${esc(row.message)}</small>`:''}</span></div>`;
     }).join('');
     const stageName = counts.pending ? 'review' : failed + notStarted ? 'retry' : job.searchIssues?.length ? 'platform' : 'export';
-    const followup = stageName === 'review' ? `<button class="review-next primary-action" ${locked ? 'disabled' : ''}>从最高相似开始审核</button><small>确认同款后，将进入供应商资料采集</small>`
+    const isTaobao=taobaoItems.length===job.items.length;
+    const followup = stageName === 'review' ? `<button class="review-next primary-action" ${locked ? 'disabled' : ''}>${isTaobao?'从推荐淘宝候选开始审核':'从最高相似开始审核'}</button><small>${isTaobao?'确认同款后，将作为套图来源继续互拓采集':'确认同款后，将进入供应商资料采集'}</small>`
       : stageName === 'retry' ? `<button class="retry-job primary-action" data-job="${esc(job.id)}" ${locked ? 'disabled' : ''}>${locked ? `自动重试中（${job.autoRetryCount || 0}/3）` : '重试未识别候选'}</button><small>每轮最多自动重试 3 次；连续失败后可手动开启新一轮</small>`
       : stageName === 'platform' ? `<button class="platform-problems primary-action" ${locked ? 'disabled' : ''}>查看登录问题</button><small>处理平台登录或验证后，可回到插件重新搜图</small>`
       : `<button class="export-job primary-action" data-job="${esc(job.id)}">导出结果</button><small>本批候选已处理完，可下载完整记录</small>`;
     const issueDetails = job.searchIssues?.length ? `<div class="platform-issue-list" hidden>${job.searchIssues.map(issue => `<p><strong>${esc(platformName(issue.platform))} · ${issue.phase === 'partial' ? '部分检索失败' : issue.phase === 'manual_required' ? '需要登录' : '平台异常'}</strong><span>${esc(issue.message)}</span></p>`).join('')}</div>` : '';
-    return `<article class="job" data-job="${esc(job.id)}"><div class="job-title">${esc(job.queryName || job.goodsId || '未命名任务')} <span class="candidate-total">${esc(job.total)} 条候选</span>${job.searchIssues?.length ? '<span class="platform-issue-tag">有平台异常</span>' : ''}</div><div class="job-meta">${esc(status)}</div><div>已识别 ${compared}/${job.total}</div><progress max="100" value="${pct}"></progress><div class="job-dashboard"><div><span>待人工核对</span><strong>${counts.pending}</strong></div><div><span>需重试</span><strong>${failed + notStarted}</strong></div><div><span>已排除</span><strong>${counts.excluded}</strong></div><div><span>确认同款</span><strong>${counts.confirmed}</strong></div></div><div class="job-counts">抓取候选 ${esc(job.total)} 条 · 模型建议 ${compared} 条${job.autoRetryCount ? ` · 自动重试 ${job.autoRetryCount}/3` : ''}${job.manualRetryRounds ? ` · 手动续轮 ${job.manualRetryRounds} 次` : ''}</div><section class="platform-search-summary"><h3>四个平台搜索覆盖</h3>${platformSummary}<small>“收到”是平台返回候选；“本批候选”是通过条件后进入本批的数量。平台报告总数可能更大；17网两组报告可能重复。历史统计未保存时标为未知。</small></section>${priceComparison}<div class="job-followup">${followup}<button class="view-all-results secondary">查看全部候选</button></div>${issueDetails}${job.error ? `<div class="job-error">${esc(comparisonError(job.error))}</div>` : ''}
+    return `<article class="job" data-job="${esc(job.id)}"><div class="job-title">${esc(job.queryName || job.goodsId || '未命名任务')} <span class="candidate-total">${esc(job.total)} 条候选</span>${job.searchIssues?.length ? '<span class="platform-issue-tag">有平台异常</span>' : ''}</div><div class="job-meta">${esc(status)}</div><div>已识别 ${compared}/${job.total}</div><progress max="100" value="${pct}"></progress><div class="job-dashboard"><div><span>待人工核对</span><strong>${counts.pending}</strong></div><div><span>需重试</span><strong>${failed + notStarted}</strong></div><div><span>已排除</span><strong>${counts.excluded}</strong></div><div><span>确认同款</span><strong>${counts.confirmed}</strong></div></div><div class="job-counts">抓取候选 ${esc(job.total)} 条 · 模型建议 ${compared} 条${job.autoRetryCount ? ` · 自动重试 ${job.autoRetryCount}/3` : ''}${job.manualRetryRounds ? ` · 手动续轮 ${job.manualRetryRounds} 次` : ''}</div><section class="platform-search-summary"><h3>${isTaobao?'淘宝搜索覆盖':'四个平台搜索覆盖'}</h3>${platformSummary}<small>“收到”是平台返回候选；“本批候选”是通过条件后进入本批的数量。平台报告总数可能更大；17网两组报告可能重复。历史统计未保存时标为未知。</small></section>${priceComparison}${taobaoComparison}<div class="job-followup">${followup}<button class="view-all-results secondary">查看全部候选</button></div>${issueDetails}${job.error ? `<div class="job-error">${esc(comparisonError(job.error))}</div>` : ''}
       <div class="job-times"><span>创建：<time>${esc(taskTime(job.createdAt))}</time></span><span>最近更新：<time>${esc(taskTime(job.updatedAt))}</time></span>${job.retryCount ? `<span>已重试 ${esc(job.retryCount)} 次 · 最近：<time>${esc(taskTime(job.lastRetryAt))}</time></span>` : ''}${job.retryOf ? '<span>重比记录</span>' : ''}</div>
       <div class="job-review"><label>结果口径<select class="review-mode" ${locked ? 'disabled' : ''}>${[['manual','人工确认模式'],['direct','模型建议模式（结论暂定）']].map(([value,label]) => `<option value="${value}" ${FindReview.mode(job.reviewMode) === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><p>${esc(FindReview.text(job.items, job.reviewMode))}</p><small>匹配分只用于排序参考，不代表同款概率；${FindReview.thresholdText(scoreThreshold)}自动排除。颜色、光线和拍摄背景不同通常不影响同款判断。</small><p class="review-message" role="status"></p></div>
       <details class="job-results" ${expanded.has(job.id) ? 'open' : ''}><summary>查看全部候选（${job.items.length}）</summary><div class="candidate-filters"><label>平台<select class="platform-filter">${[['all','全部平台'],['wsy','网商园'],['zwd','17 网'],['qcc','青创网'],['e3hui','衣衫汇'],['taobao','淘宝']].map(([value,label]) => `<option value="${value}" ${platform === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><label>状态<select class="review-filter">${[['recommended','推荐先看'],['pending','待人工'],['retry','需重试'],['excluded','已排除'],['all','全部候选']].map(([value,label]) => `<option value="${value}" ${filter === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><span class="filter-result-count">当前 ${filtered.length} 条</span></div>${filter === 'retry' && failed + notStarted ? `<button class="retry-job secondary" data-job="${esc(job.id)}" ${locked ? 'disabled' : ''}>重试本批未识别候选</button>` : ''}${rows || '<p class="muted">当前筛选没有结果。</p>'}${filtered.length > limit ? '<button class="show-more secondary">再显示 8 条</button>' : ''}${stageName !== 'export' ? `<button class="export-job secondary" data-job="${esc(job.id)}">导出完整记录</button>` : ''}</details>${legacy && !locked ? `<div class="legacy-warning">旧结果可能使用了缩略图。重新比对会创建新任务，原记录保留，并重新计费。<button class="recompare-job secondary" data-job="${esc(job.id)}">用高清图逐张重新比对</button></div>` : ''}<button class="delete-job secondary" ${(locked || detailsBusy) ? `disabled title="${detailsBusy ? '商品详情采集中，暂不能删除' : '排队和识别中的任务不能删除'}"` : ''}>删除本批记录</button></article>`;
@@ -163,7 +168,7 @@ async function refresh() {
     const isLocked = ['queued', 'processing'].includes(job.status) || retryingJobs.has(job.id);
     for (let index = 0; index < job.items.length; index++) {
       const item = job.items[index], review = FindReview.decision(item);
-      const row = article.querySelector(`.view-image[data-index="${index}"]`)?.closest('.result-row');
+      const row = article.querySelector(`.result-row[data-index="${index}"]`);
       if (!row) continue;
       if (item.detailUrl) {
         const open = document.createElement('button'); open.type = 'button'; open.className = 'secondary open-product-detail'; open.dataset.index = String(index); open.textContent = '打开商品链接'; row.lastElementChild.append(open);
@@ -182,7 +187,7 @@ async function refresh() {
       const panel = document.createElement('div'); panel.className = 'collected-product-details';
       const heading = document.createElement('h3'); heading.textContent = `同款详情 · ${details.title || job.items[index].title || '商品'}`; panel.append(heading);
       const facts = document.createElement('p'); facts.className = 'muted';
-      facts.textContent = [details.shopName, details.price != null ? `${details.priceType === 'tiered' ? '阶梯价 ' : '供货价 '}¥${details.price}` : '', details.priceTiers?.length ? details.priceTiers.map(row => `${row.quantity} ¥${row.price}`).join(' / ') : '', details.resaleFloor != null ? `最低限价 ¥${details.resaleFloor}` : '', details.sku ? `货号 ${details.sku}` : '', details.colors?.length ? `颜色 ${details.colors.join('、')}` : '', details.sizes?.length ? `尺码 ${details.sizes.join('、')}` : '', details.attributes?.length ? `${details.attributes.length} 项规格` : ''].filter(Boolean).join(' · '); panel.append(facts);
+      facts.textContent = [details.shopName, details.address ? `发货地 ${details.address}` : '', details.price != null ? `${details.priceType === 'tiered' ? '阶梯价 ' : '供货价 '}¥${details.price}` : '', details.priceTiers?.length ? details.priceTiers.map(row => `${row.quantity} ¥${row.price}`).join(' / ') : '', details.resaleFloor != null ? `最低限价 ¥${details.resaleFloor}` : '', details.sku ? `货号 ${details.sku}` : '', details.colors?.length ? `颜色 ${details.colors.join('、')}` : '', details.sizes?.length ? `尺码 ${details.sizes.join('、')}` : '', details.attributes?.length ? `${details.attributes.length} 项规格` : ''].filter(Boolean).join(' · '); panel.append(facts);
       if (details.quality) { const quality = document.createElement('p'); quality.className = 'muted'; quality.textContent = `采集状态：${details.quality.state === 'complete' ? '资料齐全' : `资料部分缺失${details.quality.missingFields?.length ? '（' + details.quality.missingFields.join('、') + '）' : ''}`} · 详情图 ${details.quality.imageCoverage?.detailImages ?? '未知'}/${details.quality.imageCoverage?.detailNodes ?? '未知'} · ${details.quality.imageCoverage?.complete === true ? '图集完整' : '图集未完整'}`; panel.append(quality); }
       if (details.description) { const description = document.createElement('p'); description.textContent = details.description; panel.append(description); }
       if (details.attributes?.length) {
@@ -255,9 +260,15 @@ async function openReview(job, index) {
     const item = job.items[index];
     const query = await window.desktop.queryImage(job.id);
     const candidateImage = item.imageEvidence ? await window.desktop.candidateImage(job.id, index) : undefined;
+    const isBuyerMarketplace=!!job.buyerTaskId&&item.platform==='taobao';
     const isBuyerSupplier=!!job.buyerTaskId&&String(job.queryName||'').includes('供应商同款');
-    FindReviewUI.open({ item, query, candidateImage, isBuyerSupplier, onSave: async input => {
+    FindReviewUI.open({ item, query, candidateImage, isBuyerSupplier, isBuyerMarketplace, onSave: async input => {
       const {continueBuyer=false,...reviewInput}=input||{};
+      if(continueBuyer&&isBuyerMarketplace){
+        const result=await window.desktop.confirmBuyerTaobao(job.buyerTaskId,job.id,index,reviewInput,FindReview.signature(item));
+        notify(result.continued?'已人工确认淘宝套图来源，自动流程继续到互拓采集。':'已人工确认同款并关联为淘宝套图来源。');showPage('buyer');
+        await refresh();return;
+      }
       await window.desktop.reviewItem(job.id, index, input ? reviewInput : null, FindReview.signature(item));
       if(continueBuyer){
         await window.desktop.confirmBuyerComparisonCandidate(job.id,index);
@@ -265,6 +276,10 @@ async function openReview(job, index) {
         showPage('buyer');
       } else if (input?.verdict === 'likely_same' && item.platform === 'taobao') {
         notify('淘宝同款结论已保存；请在买手自动化中点击“选作套图来源”。');
+      } else if (input?.verdict === 'different') {
+        notify('已人工排除此候选，请继续核对其他商品；不会将本候选用作套图来源。');
+      } else if (input?.verdict === 'uncertain') {
+        notify('已记录无法判断，请继续核对其他候选。');
       } else if (input?.verdict === 'likely_same' && !item.productDetails && !isBuyerSupplier) {
         try {
           await window.desktop.collectProductDetails(job.id, index);
@@ -276,6 +291,7 @@ async function openReview(job, index) {
     } });
   } catch (error) { $('serviceState').textContent = error.message || '读取审核图片失败'; }
 }
+window.openBuyerCandidateReview=async(jobId,index)=>{await refresh();const job=snapshot?.jobs.find(row=>row.id===jobId);if(!job?.items[index])throw new Error('没有可打开的淘宝候选记录');return openReview(job,index);};
 async function viewImage(job, index) {
   try {
     const item = job.items[index];
@@ -347,6 +363,7 @@ $('jobs').addEventListener('change', async event => {
 
 $('navWork').addEventListener('click', () => showPage(false));
 $('navBuyer').addEventListener('click', () => showPage('buyer'));
+$('navDrafts').addEventListener('click', () => {showPage('drafts');void window.loadBuyerDrafts?.(true);});
 $('navDouyin').addEventListener('click', () => showPage('douyin'));
 $('navSettings').addEventListener('click', () => showPage(true));
 $('navUpdates').addEventListener('click', () => showPage('updates'));
@@ -428,8 +445,8 @@ function openPlatformAccount(platform) {
   if (!account) return;
   $('platformAccountForm').reset(); $('platformAccountMessage').textContent = '';
   $('platformAccountPlatform').value = platform;
-  $('platformAccountTitle').textContent = `${account.configured ? '编辑' : '添加'}${account.name}账号`;
-  $('platformAccountPrompt').textContent = '密码加密保存在当前 Windows 用户的 TDL 账号目录。';
+  $('platformAccountTitle').textContent = `${account.configured ? '修改' : '添加'}${account.name}账号`;
+  $('platformAccountPrompt').textContent = '加密保存在这台电脑，正常更新后继续保留。密码留空保留原值；更换账号时需重新填写对应密码。';
   $('platformAccountUsername').value = account.username || '';
   $('platformAccountPassword').value = '';
   $('platformAccountPassword').placeholder = account.configured ? '已加密保存；留空保留原密码' : '输入平台密码';
@@ -448,7 +465,7 @@ $('platformAccountForm').addEventListener('submit', async event => {
   try {
     await window.desktop.savePlatformAccount(platform, input);
     input.password = '';
-    closePlatformAccount(); notify('平台账号已加密保存。'); await refresh();
+    closePlatformAccount(); notify('平台账号已保存到本机，重启和正常覆盖升级后继续保留，可随时修改。'); await refresh();
   } catch (error) {
     input.password = ''; $('platformAccountMessage').textContent = errorText(error);
   } finally { $('savePlatformAccount').disabled = false; }

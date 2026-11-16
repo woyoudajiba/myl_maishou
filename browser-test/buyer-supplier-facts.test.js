@@ -1,0 +1,43 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
+const {_electron}=require('playwright');const {profileId}=require('../desktop/accounts');
+const root=path.resolve(__dirname,'..');
+test('供货资料：页面成分保留、真实图片选尺码图、放大和失败重试、窄窗无溢出',{timeout:55000},async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'pc-supplier-facts-'));let app;
+  t.after(async()=>{await app?.close();await fs.rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+  const user={id:'supplier-facts-qa',username:'supplier-facts-qa',displayName:'供货资料验收'},id=crypto.randomUUID(),profile=path.join(dir,'profile'),dataDir=path.join(profile,'profiles',profileId(user));
+  const photo='https://imgcdn.wsy.com/fixtures/6803-photo.jpg',size='https://imgcdn.wsy.com/fixtures/6803-size.jpg',failed='https://imgcdn.wsy.com/fixtures/6803-failed.jpg';
+  const details={url:'https://www.wsy.com/item.htm?id=26716885',title:'6803翻领外套',sku:'6803',shopName:'国际服装城1X16',price:65,priceType:'supply',colors:['黑色','灰色'],sizes:['XL','2XL','3XL','L','4XL','M'],attributes:['面料:聚酯纤维','填充物材质:聚酯纤维'],images:[photo,size,failed]};
+  const task={id,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),sourceType:'taobao',sourceUrl:'https://item.taobao.com/item.htm?id=12345678',sourceTitle:'6803真实商品资料',articleNo:'6803',imageFile:'',events:[],automation:{enabled:true,state:'attention',step:'supplier_facts',error:'供应商成分及比例；供应商尺码图',tags:[],checkpoints:{},supplier:{platform:'wsy',detailUrl:details.url},supplierDetails:details,facts:{articleNo:'6803',supplierName:details.shopName,cost:65,colors:details.colors,sizes:details.sizes,materials:[],fork:0}}};
+  await fs.mkdir(dataDir,{recursive:true});await fs.writeFile(path.join(dataDir,'buyer-tasks.json'),JSON.stringify({tasks:[task],automationPaused:true}));
+  const bootstrap=path.join(dir,'main.cjs');await fs.writeFile(bootstrap,`const{app}=require('electron');app.setPath('userData',${JSON.stringify(profile)});require(${JSON.stringify(path.join(root,'desktop/main.js'))});`);
+  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+  app=await _electron.launch({executablePath:path.join(root,'desktop/node_modules/electron/dist/electron.exe'),args:[bootstrap],env});
+  const page=await app.firstWindow(),errors=[];page.on('pageerror',e=>errors.push(e.message));await app.context().route('https://**/*',route=>route.abort());
+  const images={photo:(await fs.readFile(path.join(root,'fixtures/supplier-6803-photo.jpg'))).toString('base64'),size:(await fs.readFile(path.join(root,'fixtures/supplier-6803-size.jpg'))).toString('base64')};
+  await app.evaluate((_,{user,images})=>{globalThis.allowImageRetry=false;globalThis.realWrites=0;process.getBuiltinModule('node:dns/promises').lookup=async()=>[{address:'93.184.216.34',family:4}];globalThis.fetch=async(url,options={})=>{
+    const target=String(url);
+    if(target.startsWith('https://wsfile.cn/myladmin/api/auth/'))return Response.json(target.endsWith('/login')?{user,token:'fixture',expiresAt:new Date(Date.now()+3600000).toISOString()}:{user,ok:true});
+    if(target.endsWith('/erp-config/me'))return Response.json({ready:false});
+    if(target.startsWith('https://imgcdn.wsy.com/')){if(target.endsWith('failed.jpg')&&!allowImageRetry)return new Response('',{status:503});return new Response(Buffer.from(target.endsWith('size.jpg')?images.size:images.photo,'base64'),{headers:{'content-type':'image/jpeg'}});}
+    if(options.method==='POST')realWrites++;throw new Error('测试禁止ERP业务写入和模型调用');
+  };},{user,images});
+  await page.locator('#username').fill(user.username);await page.locator('#password').fill('fixture');await page.locator('#loginButton').click();await page.locator('#appShell').waitFor({state:'visible'});await page.locator('#navBuyer').click();
+  await page.locator('.buyer-auto-detail').click();const form=page.locator('#buyerSupplyFactsForm');await form.waitFor();
+  assert.equal(await form.locator('[name=materials]').inputValue(),'聚酯纤维');assert.match(await form.locator('.buyer-material-evidence').textContent(),/面料:聚酯纤维.*填充物材质:聚酯纤维/s);
+  assert.equal(await form.locator('[name=sizes]').inputValue(),'M L XL 2XL 3XL 4XL','旧任务乱序尺码在表单预填时排序');
+  await form.locator('[name=sizes]').fill('4XL 3XL XL M 2XS XS S L 2XL');await form.locator('[name=materials]').focus();
+  assert.equal(await form.locator('[name=sizes]').inputValue(),'2XS XS S M L XL 2XL 3XL 4XL','人工输入完成后也按尺码顺序排列');
+  assert.equal(await form.locator('[name=sizeImageIndex]').inputValue(),'','没有尺码图时不能默认第一张商品照片');
+  await page.waitForFunction(()=>document.querySelectorAll('.buyer-size-image[data-loaded]').length===2);
+  assert.equal(await form.locator('.buyer-size-image img:visible').count(),2);assert.equal(await form.locator('.buyer-size-images-retry').isVisible(),true);
+  await form.locator('.buyer-size-image[data-index="1"] input').check();assert.equal(await form.locator('[name=sizeImageIndex]').inputValue(),'1');
+  await form.locator('.buyer-size-image[data-index="1"] .buyer-size-zoom').click();await page.locator('#buyerGalleryImageDialog').waitFor({state:'visible'});assert.match(await page.locator('#buyerGalleryImageDialog img').getAttribute('src'),/^data:image\/jpeg;base64,/);await page.locator('#buyerGalleryImageDialog button').click();
+  await form.locator('[name=materials]').fill('聚酯纤维');await form.locator('button[type=submit]').click();assert.match(await form.locator('[name=materials]').getAttribute('class')||'',/buyer-fact-invalid/);assert.equal(await page.locator('#buyerAutoDetailDialog').isVisible(),true);
+  await form.locator('[name=materials]').fill('聚酯纤维 100');await app.evaluate(()=>{allowImageRetry=true;});await form.locator('.buyer-size-images-retry').click();await page.waitForFunction(()=>document.querySelectorAll('.buyer-size-image[data-loaded]').length===3);
+  assert.equal(await form.locator('[name=materials]').inputValue(),'聚酯纤维 100');assert.equal(await form.locator('[name=sizeImageIndex]').inputValue(),'1');
+  await fs.mkdir(path.join(root,'output/playwright'),{recursive:true});await form.locator('.buyer-material-evidence').scrollIntoViewIfNeeded();await page.screenshot({path:path.join(root,'output/playwright/supplier-facts-real-images-desktop.png')});
+  await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(800,740));await form.locator('.buyer-size-picker').scrollIntoViewIfNeeded();
+  assert.equal(await page.locator('#buyerAutoDetailBody').evaluate(node=>node.scrollWidth<=node.clientWidth),true);await page.screenshot({path:path.join(root,'output/playwright/supplier-facts-real-images-800.png')});
+  await form.locator('button[type=submit]').click();await page.locator('#buyerAutoDetailDialog').waitFor({state:'hidden'});
+  const saved=await page.evaluate(id=>window.desktop.buyerTaskDetail(id),id);assert.equal(saved.automation.facts.sizePic,size);assert.deepEqual(saved.automation.facts.materials,[{name:'聚酯纤维',rate:100}]);assert.deepEqual(saved.automation.facts.sizes,['2XS','XS','S','M','L','XL','2XL','3XL','4XL']);assert.equal(await app.evaluate(()=>realWrites),0);assert.deepEqual(errors,[]);
+});

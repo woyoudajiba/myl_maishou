@@ -19,6 +19,7 @@ class OnlineTableClient {
     this.transport = transport;
     this.configure({ baseUrl, tableId, authToken });
   }
+  getBaseUrl(){return this.baseUrl;}
   configure({ baseUrl = this.baseUrl || DEFAULT_TABLE_SERVICE_URL, tableId = this.tableId || '', authToken = this.authToken || '' } = {}) {
     this.baseUrl = safeBaseUrl(baseUrl);
     this.tableId = TABLE_ID.test(String(tableId || '')) ? String(tableId) : '';
@@ -110,7 +111,7 @@ class OnlineTableClient {
   }
   async updateTask(rowId, taskId, patch, ifVersion) {
     // Rebase only workflow fields belonging to the same claimed task. User edits stay intact.
-    const workflowPatch = Object.fromEntries(['automationState','automationStep','automationError','erpProductNo'].filter(key=>Object.hasOwn(patch,key)).map(key=>[key,patch[key]]));
+    const workflowPatch = Object.fromEntries(['automationState','automationStep','automationError','erpProductNo','supplierArticleNo'].filter(key=>Object.hasOwn(patch,key)).map(key=>[key,patch[key]]));
     try { return await this.updateRow(rowId,workflowPatch,ifVersion,taskId); }
     catch(error){
       if(error.status!==409 || !taskId || error.current?.taskId!==taskId)throw error;

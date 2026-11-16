@@ -125,3 +125,25 @@ test('高相似候选跨平台展示价格，不要求货号相同或伪造人�
   assert.equal(review.highSimilarityPriceGroups([rows[0],rows[1],reviewedLow])[0].items.length,2,'人工将匹配分降到阈值以下后，不纳入高相似比价');
   assert.deepEqual(review.highSimilarityPriceGroups([rows[0]]),[],'只有一条可比候选时不显示价格比较区');
 });
+
+test('淘宝先85分及以上同款建议、再销量；不同款高销量也不能排前，边界85包含在前组',()=>{
+  const item=(id,score,verdict,salesText)=>({...candidate(id,verdict),platform:'taobao',salesText,visualComparison:{...candidate(id,verdict).visualComparison,score}});
+  const rows=[item('different-high-sales',99,'different','100万+人付款'),item('low',84,'likely_same','10万+人付款'),item('high-score',99,'likely_same','10人付款'),item('boundary',85,'similar','100人付款'),item('unknown',null,'uncertain','20万+人付款'),item('missing-sales',95,'similar','')];
+  const sorted=[...rows].sort(review.compare);
+  assert.deepEqual(sorted.map(row=>row.id),['boundary','high-score','missing-sales','low','unknown','different-high-sales']);
+  assert.deepEqual([...rows].sort(review.compareTaobao).map(row=>row.id),sorted.map(row=>row.id));
+  assert.equal(rows[0].visualComparison.verdict,'different');assert.equal(review.decision(rows[1]),null,'排序不修改同款结论');
+  const rejected=review.apply(item('rejected',99,'likely_same','200万+人付款'),{verdict:'different',note:'人工排除'});
+  const confirmed=review.apply(item('confirmed',60,'different','1人付款'),{verdict:'likely_same',note:'人工确认结构一致'});
+  const uncertain=review.apply(item('human-uncertain',99,'likely_same','300万+人付款'),{verdict:'uncertain',note:'看不清'});
+  assert.deepEqual([rejected,uncertain,rows[3],confirmed].sort(review.compare).map(row=>row.id),['confirmed','boundary','human-uncertain','rejected']);
+  const lowered=review.apply(item('lowered',99,'similar','10万+人付款'),{verdict:'similar',score:84,note:'人工下调参考分'});
+  assert.equal(review.taobaoPriority(lowered),2);
+});
+
+test('淘宝未识别仍按销量排序，相同销量按分数；供应商款式排序沿用原规则',()=>{
+  const raw=[{id:'unknown',platform:'taobao'},{id:'low',platform:'taobao',salesText:'100人付款'},{id:'high',platform:'taobao',salesText:'1万+人付款'}];
+  assert.deepEqual(raw.sort(review.compare).map(row=>row.id),['high','low','unknown']);
+  const same={...candidate('same','likely_same'),salesText:'1人付款',visualComparison:{...candidate().visualComparison,score:80}},similar={...candidate('similar','similar'),salesText:'1万+人付款',visualComparison:{...candidate().visualComparison,verdict:'similar',score:99}};
+  assert.deepEqual([similar,same].sort(review.compare).map(row=>row.id),['same','similar']);
+});

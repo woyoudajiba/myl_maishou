@@ -54,12 +54,47 @@ test('重复导入同一表不会新增任务，跨表同链接关联为例外�
 });
 const same=(id,platform='qcc')=>({id,platform,title:'同款衬衫',detailUrl:'https://www.17qcc.com/goods/'+id+'.html',imageUrl:'https://pics.17qcc.com/'+id+'.jpg',visualComparison:{verdict:'likely_same',score:96,differences:[],uncertainties:[]}});
 async function setup(t){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'buyer-engine-test-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));const workflow=new BuyerWorkflow({dataDir:dir});await workflow.load();const preview=parseBuyerTable(Buffer.from('货号,链接\nA1,https://v.douyin.com/a/\nA2,https://v.douyin.com/b/\nA3,https://v.douyin.com/c/'),'队列.csv');await workflow.importTable(preview);return workflow;}
-test('完整商品自动进互拓待审核，多供应商同款与缺资料打标签，后续商品不中断',async t=>{
-  const workflow=await setup(t);let submits=0,converts=0;
-  const providers={source:async()=>({images:[],url:'https://v.douyin.com/a/'}),searchSuppliers:async()=>({items:[same('123')],records:['wsy','zwd','qcc','e3hui'].map(key=>({key,phase:'complete'}))}),compareSuppliers:async task=>({status:'complete',items:task.articleNo==='A2'?[same('2'),same('3')]:[same(task.id)]}),supplierDetails:async()=>({images:[],visibleText:'真实资料'}),facts:async task=>({articleNo:task.articleNo,supplierName:'测试供应商',missing:task.articleNo==='A3'?['供应商成分及比例']:[]}),marketplace:async()=>({url:'https://item.taobao.com/item.htm?id=12345678'}),duplicates:async()=>[],collect:async()=>({rawPrefill:{}}),map:async()=>({payload:{test:'固定正文'},missing:[]}),prepare:async payload=>({key:uuid(),body:JSON.stringify(payload)}),submit:async()=>{submits++;return{state:'saved',draftId:'101'};},verify:async()=>({draftVersion:2}),target:()=> 'pending',convert:async()=>{converts++;return{productId:'201',productNo:'QCC-ABC-001',productState:0};}};
+test('完整商品先保存到互拓草稿，人工检查后才转入待审核',async t=>{
+  const workflow=await setup(t);let submits=0,converts=0,duplicateCalls=0;
+  const providers={source:async()=>({images:[],url:'https://v.douyin.com/a/'}),searchSuppliers:async()=>({items:[same('123')],records:['wsy','zwd','qcc','e3hui'].map(key=>({key,phase:'complete'}))}),compareSuppliers:async task=>({status:'complete',items:task.articleNo==='A2'?[same('2'),same('3')]:[same(task.id)]}),supplierDetails:async()=>({images:[],visibleText:'真实资料'}),facts:async task=>({articleNo:task.articleNo,supplierName:'测试供应商',missing:task.articleNo==='A3'?['供应商成分及比例']:[]}),marketplace:async()=>({url:'https://item.taobao.com/item.htm?id=12345678'}),duplicates:async()=>{duplicateCalls++;return[];},collect:async()=>({rawPrefill:{}}),map:async()=>({payload:{test:'固定正文'},missing:[]}),prepare:async payload=>({key:uuid(),body:JSON.stringify(payload)}),submit:async()=>{submits++;return{state:'saved',draftId:'101'};},verify:async()=>({id:'101',draftVersion:2,draftState:'DRAFT'}),convertDraftEntry:async()=>{converts++;return{draftId:'101',productId:'201',productNo:'QCC-ABC-001',productState:0};}};
   const engine=new BuyerEngine({workflow,providers,signal:new AbortController().signal});await engine.start(workflow.snapshot().map(task=>task.id));
   for(let i=0;i<20;i++)for(const task of workflow.state.tasks)if(!['attention','completed'].includes(task.automation.state))await engine.step(task);
-  assert.equal(workflow.state.tasks[0].automation.state,'completed');assert.equal(workflow.state.tasks[0].automation.result.productNo,'QCC-ABC-001');assert.deepEqual(workflow.state.tasks[1].automation.tags,['多供应商同款']);assert.deepEqual(workflow.state.tasks[2].automation.tags,['供应商资料缺失']);assert.equal(submits,1);assert.equal(converts,1);await engine.close();
+  const task=workflow.state.tasks[0];assert.equal(task.automation.state,'attention');assert.equal(task.automation.step,'draft_review');assert.equal(task.automation.enabled,false);assert.equal(task.automation.draftId,'101');assert.deepEqual(task.automation.tags,['互拓草稿待检查']);assert.deepEqual(workflow.state.tasks[1].automation.tags,['多供应商同款']);assert.deepEqual(workflow.state.tasks[2].automation.tags,['供应商资料缺失']);assert.equal(submits,1);assert.equal(converts,0,'automatic flow must stop before pending review');assert.equal(duplicateCalls,0,'complete product must bypass pool-product duplicate lookup');assert.equal(task.automation.erpDuplicatePolicy,'manual_after_pending');
+  await assert.rejects(()=>engine.retry(task.id),/草稿箱/);const result=await engine.convertDraftForReview('101');assert.equal(result.productNo,'QCC-ABC-001');assert.equal(converts,1);assert.equal(task.automation.state,'completed');assert.equal(task.automation.result.productState,0);await engine.close();
+});
+
+test('旧ERP查重失败任务可直接继续到资料采集，不再查询重复商品',async t=>{
+  const workflow=await setup(t),task=workflow.state.tasks[0];let duplicateCalls=0,updates=0;
+  const engine=new BuyerEngine({workflow,providers:{onTaskUpdated:async()=>{updates++;},validateTask:async()=>{},duplicates:async()=>{duplicateCalls++;throw Error('不应查询ERP商品池');}},signal:new AbortController().signal});engine.resume=async()=>{};
+  await workflow.patchAutomation(task.id,{step:'duplicate_check',state:'attention',enabled:false,marketplace:{url:'https://item.taobao.com/item.htm?id=12345678'},duplicateReview:{status:'failed',error:'HTTP 503'}});
+  await engine.retry(task.id);
+  const a=workflow.task(task.id).automation;
+  assert.equal(a.step,'collection');assert.equal(a.state,'queued');assert.equal(a.enabled,true);assert.equal(a.erpDuplicatePolicy,'manual_after_pending');
+  assert.equal(a.duplicateReview.status,'skipped');assert.equal(a.duplicateReview.previousStatus,'failed');assert.equal(duplicateCalls,0);assert.equal(updates,1);
+  await assert.rejects(()=>engine.retry(task.id),/仅待处理或停止任务可重试/);await engine.close();
+});
+test('资料完整的新任务直接越过互拓查重进入采集步骤',async t=>{
+  const workflow=await setup(t),task=workflow.state.tasks[0];let duplicateCalls=0,marketplaceCalls=0,collectCalls=0;
+  const engine=new BuyerEngine({workflow,providers:{marketplace:async()=>{marketplaceCalls++;return{url:'https://item.taobao.com/item.htm?id=12345678'};},duplicates:async()=>{duplicateCalls++;throw Error('ERP商品池查重不应调用');},collect:async()=>{collectCalls++;return{rawPrefill:{}};},onTaskUpdated:async()=>{}},signal:new AbortController().signal});
+  await workflow.patchAutomation(task.id,{enabled:true,state:'queued',step:'marketplace',facts:{articleNo:'A1'}});
+  await engine.step(task);assert.equal(task.automation.step,'collection');assert.equal(task.automation.erpDuplicatePolicy,'manual_after_pending');
+  await engine.step(task);assert.equal(collectCalls,1);assert.equal(marketplaceCalls,1);assert.equal(duplicateCalls,0);await engine.close();
+});
+test('旧任务的自动转换步骤改为回读，不直接调用转换接口',async t=>{
+  const workflow=await setup(t),task=workflow.state.tasks[0];let converts=0;
+  const engine=new BuyerEngine({workflow,providers:{convert:async()=>{converts++;}},signal:new AbortController().signal});
+  await workflow.patchAutomation(task.id,{step:'convert',state:'queued',enabled:true,draftId:'101'});
+  await engine.step(task);assert.equal(task.automation.step,'verify');assert.equal(converts,0);await engine.close();
+});
+test('手动转换失败保留草稿检查位置，防止同一草稿并发转换',async t=>{
+  const workflow=await setup(t),task=workflow.state.tasks[0];let rejectConversion;
+  await workflow.patchAutomation(task.id,{step:'draft_review',state:'attention',enabled:false,draftId:'101'});
+  const engine=new BuyerEngine({workflow,providers:{convertDraftEntry:async()=>new Promise((_,reject)=>{rejectConversion=reject;})},signal:new AbortController().signal});
+  const first=engine.convertDraftForReview('101',2);
+  await assert.rejects(()=>engine.convertDraftForReview('101',2),/正在转换/);
+  while(!rejectConversion)await new Promise(resolve=>setImmediate(resolve));
+  const failed=assert.rejects(first,/模拟转换失败/);rejectConversion(new Error('模拟转换失败'));await failed;
+  assert.equal(task.automation.step,'draft_review');assert.equal(task.automation.state,'attention');assert.equal(task.automation.inFlight,null);assert.equal(task.automation.draftId,'101');await engine.close();
 });
 test('互拓超时保留同一幂等键与正文；崩溃不把未知回执当成功或自动重新创建',async t=>{
   const workflow=await setup(t),task=workflow.state.tasks[0];await workflow.patchAutomation(task.id,{enabled:true,step:'submit',state:'queued',draftAttempt:{key:'same-key',body:'{"value":1}'}});
@@ -104,9 +139,35 @@ test('当前记录选定网商园商品时，不将另一条青创网候选价�
   const merged=mergeStructuredSupplierFacts(model,details);
   assert.equal(merged.supplierName,'国际服装城30732');assert.equal(merged.cost,150);assert.deepEqual(merged.colors,['灰色','黑色']);assert.deepEqual(merged.sizes,['M','L','XL','2XL']);
 });
+
+test('页面面料名称保留但不猜比例，填充物不并入面料，明确比例可直接回填',()=>{
+  const {supplierMaterialInfo}=require('../desktop/buyer-evidence');
+  const details={sku:'6803',shopName:'档口',attributes:['面料:聚酯纤维','填充物材质:聚酯纤维'],images:['https://imgcdn.wsy.com/test.jpg']};
+  const merged=mergeStructuredSupplierFacts({materials:[{name:'棉',rate:100}],evidence:{materials:'棉100%'}},details);
+  assert.deepEqual(merged.materials,[{name:'聚酯纤维',rate:null}]);assert.equal(merged.evidence.materials,'面料:聚酯纤维');
+  const facts=validateSupplierFacts(merged,details);assert.deepEqual(facts.materials,[{name:'聚酯纤维',rate:null}]);assert.ok(facts.missing.includes('供应商成分及比例'));
+  assert.equal(facts.materialInfo.sources.length,2);
+  assert.deepEqual(supplierMaterialInfo({attributes:['面料成分:聚酯纤维80%,棉20%','填充物材质:羽绒']}).materials,[{name:'聚酯纤维',rate:80},{name:'棉',rate:20}]);
+  assert.equal(supplierMaterialInfo({attributes:['面料成分:100%聚酯纤维']}).proportionsKnown,true);
+  assert.deepEqual(supplierMaterialInfo({attributes:['填充物材质:聚酯纤维']}).materials,[]);
+  const ocrFacts=validateSupplierFacts({materials:[{name:'聚酯纤维',rate:100}],evidence:{materials:{quote:'聚酯纤维100%',imageIndex:8}},verifiedOcrFields:['materials']},{images:Array.from({length:10},(_,i)=>'https://imgcdn.wsy.com/'+i+'.jpg')});
+  assert.deepEqual(ocrFacts.materials,[{name:'聚酯纤维',rate:100}],'已独立复核的后部详情图OCR索引可被事实校验接受');
+  assert.throws(()=>manualSupplierFacts({articleNo:'6803',supplierName:'档口',cost:65,colors:['黑'],sizes:['M'],materials:[{name:'聚酯纤维',rate:100}],fork:0,sizeImageIndex:''},{},details),/选择尺码图/);
+});
 test('互拓连接按账号加密保存，快照不回传密码或OAuth密钥，更换服务需重新输入对应凭据',async t=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'buyer-settings-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));const storage={encrypt:value=>Buffer.from(value).toString('base64'),decrypt:value=>Buffer.from(value,'base64').toString('utf8')};const settings=new BuyerSettings({dataDir:dir,storage});await settings.load();
   await settings.save({erpBaseUrl:'https://erp.example/api',erpTenantId:'1',erpClientId:'client',erpClientSecret:'fixture-secret',erpUsername:'fixture-user',erpPassword:'fixture-password',company:'厦门',target:'pending'});
   const snapshot=settings.snapshot();assert.equal(snapshot.configured,true);assert.equal(snapshot.hasPassword,true);assert.equal(Object.hasOwn(snapshot,'erpPassword'),false);assert.equal(Object.hasOwn(snapshot,'erpClientSecret'),false);assert.equal((await fs.readFile(settings.file,'utf8')).includes('fixture-password'),false);
   await assert.rejects(settings.save({erpBaseUrl:'https://other.example/api'}),/重新填写/);const restored=new BuyerSettings({dataDir:dir,storage});await restored.load();assert.equal(restored.snapshot().configured,true);assert.equal(restored.value.target,'pending');
+});
+
+
+test('确认供应商即补候选货号，详情取得后补空白货号，已有值保留',async t=>{
+  const workflow=await setup(t),task=workflow.state.tasks[0];
+  const candidate={platform:'wsy',goodsId:'D2603',detailUrl:'https://www.wsy.com/item.htm?id=26536882',imageUrl:'https://imgcdn.wsy.com/26536882.jpg'};
+  await workflow.patchTask(task.id,{articleNo:''});await workflow.patchAutomation(task.id,{step:'supplier_compare',state:'attention',searchCandidates:[candidate]});
+  const engine=new BuyerEngine({workflow,providers:{onTaskUpdated:async()=>{}},signal:new AbortController().signal});engine.resume=async()=>{};t.after(()=>engine.close());
+  await engine.resolveSupplier(task.id,0,{manualConfirmed:true});assert.equal(task.articleNo,'D2603');
+  await workflow.patchTask(task.id,{articleNo:''});await engine.next(task,'supplier_facts',{supplierDetails:{url:candidate.detailUrl,sku:'D2603'}});assert.equal(task.articleNo,'D2603');
+  await workflow.patchTask(task.id,{articleNo:'原表货号'});await engine.backfillSupplierArticleNo(task);assert.equal(task.articleNo,'原表货号');
 });

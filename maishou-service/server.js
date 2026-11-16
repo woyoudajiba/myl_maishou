@@ -13,14 +13,17 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_USAGE_DAYS = 120;
 const MAX_ERP_BODY_BYTES = 16 * 1024 * 1024;
 const DEFAULT_ERP_PROXY_BASE = 'https://wsfile.cn/maishou/api';
+const FORMAL_ERP_BASE_URL = 'http://8.148.144.131/prod-api/admin-api';
 const allowedErpRoutes = [
   ['GET', /^\/system\/auth\/get-permission-info$/], ['GET', /^\/system\/dict-data\/list-all-simple$/],
   ['GET', /^\/system\/tenant\/get-id-by-name$/], ['GET', /^\/erp\/category\/list$/], ['GET', /^\/erp\/category\/info$/],
   ['GET', /^\/erp\/attributes-extend\/extend-category$/], ['GET', /^\/erp\/supplier-infos\/sample-list$/], ['GET', /^\/erp\/colors\/query$/],
+  ['GET', /^\/erp\/supplier-infos\/getSupplier$/],
   ['GET', /^\/taobao\/product-crawler\/get$/], ['GET', /^\/taobao\/product-crawler\/get-original-images$/],
   ['POST', /^\/taobao\/product-crawler\/taobao_product_crawler_add$/], ['POST', /^\/infra\/file\/upload$/],
+  ['POST', /^\/erp\/product-addition\/add$/],
   ['GET', /^\/erp\/product-draft\/get$/], ['GET', /^\/erp\/product-draft\/attributes$/], ['GET', /^\/erp\/product-draft\/public-pic$/],
-  ['POST', /^\/erp\/product-draft\/page$/], ['POST', /^\/erp\/product-draft\/add$/], ['POST', /^\/erp\/product-draft\/convert$/],
+  ['POST', /^\/erp\/product-draft\/page$/], ['POST', /^\/erp\/product-draft\/add$/], ['POST', /^\/erp\/product-draft\/convert$/], ['DELETE', /^\/erp\/product-draft\/delete$/],
   ['GET', /^\/erp\/pool-product\/getProductInfosDetailById$/], ['POST', /^\/erp\/pool-product\/page$/]
 ];
 
@@ -258,15 +261,24 @@ function createServer({ env = process.env, fetchImpl = (...args) => fetch(...arg
   const secret = String(env.VIAAPI_API_KEY || '').trim();
   const authUrl = env.TDL_AUTH_URL || DEFAULT_TDL_AUTH_URL;
   const upstreamUrl = env.VIAAPI_CHAT_COMPLETIONS_URL || DEFAULT_UPSTREAM_URL;
-  const envErpSettings = { erpBaseUrl: String(env.ERP_BASE_URL || '').trim(), erpTenantId: String(env.ERP_TENANT_ID || '').trim(), erpClientId: String(env.ERP_CLIENT_ID || '').trim(), erpClientSecret: String(env.ERP_CLIENT_SECRET || '').trim(), draftApiConfirmed: env.ERP_DRAFT_API_CONFIRMED === 'true', draftConvertConfirmed: env.ERP_DRAFT_CONVERT_CONFIRMED === 'true' };
-  const erpSettings = () => ({ ...envErpSettings, ...(mappings.getSettings ? mappings.getSettings() : {}) });
-  const allowedTestOrigin=String(env.ERP_HTTP_TEST_ORIGIN||'').trim();
-  const allowedEndpoint=endpoint => !endpoint.username&&!endpoint.password&&!endpoint.search&&!endpoint.hash&&(endpoint.protocol==='https:'||(endpoint.protocol==='http:'&&!!allowedTestOrigin&&endpoint.origin===allowedTestOrigin));
+  // All deployed and simulated requests use the formal ERP address. Tests
+  // replace fetchImpl; neither environment flags nor encrypted legacy settings
+  // can enable another ERP instance.
+  const formalErpBaseUrl = FORMAL_ERP_BASE_URL;
+  const allowedTestOrigin = new URL(formalErpBaseUrl).origin;
+  const envErpSettings = { erpBaseUrl: formalErpBaseUrl, erpTenantId: String(env.ERP_TENANT_ID || '').trim(), erpClientId: String(env.ERP_CLIENT_ID || '').trim(), erpClientSecret: String(env.ERP_CLIENT_SECRET || '').trim(), draftApiConfirmed: env.ERP_DRAFT_API_CONFIRMED === 'true', draftConvertConfirmed: env.ERP_DRAFT_CONVERT_CONFIRMED === 'true', directSaveConfirmed: env.ERP_DIRECT_SAVE_CONFIRMED === 'true' };
+  const erpSettings = () => { const saved = mappings.getSettings ? mappings.getSettings() : {}; return { ...envErpSettings, ...saved, erpBaseUrl: formalErpBaseUrl }; };
+  const allowedEndpoint=endpoint => !endpoint.username&&!endpoint.password&&!endpoint.search&&!endpoint.hash&&endpoint.href.replace(/\/$/,'')===formalErpBaseUrl;
   const validErpSettings = settings => {
     try { return allowedEndpoint(new URL(settings.erpBaseUrl)) && /^\d+$/.test(settings.erpTenantId || '') && !!settings.erpClientId && !!settings.erpClientSecret; } catch { return false; }
   };
-  const publicErpSettings=settings=>({erpBaseUrl:settings.erpBaseUrl||'',erpTenantId:settings.erpTenantId||'',erpClientId:settings.erpClientId||'',hasClientSecret:!!settings.erpClientSecret,httpTestOrigin:allowedTestOrigin,draftApiConfirmed:settings.draftApiConfirmed===true,draftConvertConfirmed:settings.draftConvertConfirmed===true});
+  const publicErpSettings=settings=>({erpBaseUrl:settings.erpBaseUrl||'',erpTenantId:settings.erpTenantId||'',erpClientId:settings.erpClientId||'',hasClientSecret:!!settings.erpClientSecret,httpTestOrigin:allowedTestOrigin,draftApiConfirmed:settings.draftApiConfirmed===true,draftConvertConfirmed:settings.draftConvertConfirmed===true,directSaveConfirmed:settings.directSaveConfirmed===true});
   const erpTokens = new Map();
+  const erpGrants = new Map();
+  const invalidateErpToken = accountId => {
+    if (accountId === undefined) { erpTokens.clear(); erpGrants.clear(); }
+    else { erpTokens.delete(accountId); erpGrants.delete(accountId); }
+  };
   const authCache = new Map();
   const perAccount = new Map();
 
@@ -292,12 +304,13 @@ function createServer({ env = process.env, fetchImpl = (...args) => fetch(...arg
     return user;
   }
 
-  async function erpToken(user, mapping, settings) {
-    const cached = erpTokens.get(user.id);
-    if (cached && cached.expiresAt > now() + 5000) return cached.accessToken;
+  async function erpToken(user, mapping, settings, rejectedToken = '') {
     if (!validErpSettings(settings)) throw Object.assign(new Error('服务器互拓连接暂不可用'), { status: 503 });
-    let base;
-    try { base = new URL(settings.erpBaseUrl); } catch { throw Object.assign(new Error('互拓服务地址无效'), { status: 503 }); }
+    const scope = crypto.createHash('sha256').update(JSON.stringify([settings.erpBaseUrl, settings.erpTenantId, settings.erpClientId, settings.erpClientSecret, mapping.username, mapping.password])).digest('hex');
+    const saved = erpTokens.get(user.id), cached = saved?.scope === scope ? saved : null;
+    if (cached && cached.accessToken !== rejectedToken && cached.expiresAt > now() + 5000) return cached.accessToken;
+    const pending = erpGrants.get(user.id);
+    if (pending?.scope === scope) return pending.promise;
     const requestGrant = async refresh => {
       const form = new URLSearchParams({ grant_type: refresh ? 'refresh_token' : 'password', ...(refresh ? { refresh_token: cached?.refreshToken || '' } : { username: mapping.username, password: mapping.password }) });
       let response;
@@ -305,12 +318,47 @@ function createServer({ env = process.env, fetchImpl = (...args) => fetch(...arg
       catch { throw Object.assign(new Error('互拓授权服务暂不可用'), { status: 503 }); }
       const payload = await response.json().catch(() => null), body = payload?.data;
       if (!response.ok || payload?.code !== 0 || !body?.access_token || !body?.refresh_token) throw Object.assign(new Error('互拓账号授权失败，请联系管理员检查映射'), { status: response.status >= 400 && response.status < 500 ? 403 : 503 });
-      return { accessToken: String(body.access_token), refreshToken: String(body.refresh_token), expiresAt: now() + Number(body.expires_in || 3600) * 1000 };
+      return { accessToken: String(body.access_token), refreshToken: String(body.refresh_token), expiresAt: now() + Number(body.expires_in || 3600) * 1000, scope };
     };
-    let result;
-    if (cached?.refreshToken) { try { result = await requestGrant(true); } catch { result = await requestGrant(false); } }
-    else result = await requestGrant(false);
-    erpTokens.set(user.id, result); return result.accessToken;
+    const flight = { scope };
+    flight.promise = (async () => {
+      try {
+        let result;
+        if (cached?.refreshToken) { try { result = await requestGrant(true); } catch { result = await requestGrant(false); } }
+        else result = await requestGrant(false);
+        if (erpGrants.get(user.id) === flight) erpTokens.set(user.id, result);
+        return result.accessToken;
+      } catch (error) {
+        if (erpTokens.get(user.id) === saved) erpTokens.delete(user.id);
+        throw error;
+      } finally { if (erpGrants.get(user.id) === flight) erpGrants.delete(user.id); }
+    })();
+    erpGrants.set(user.id, flight);
+    return flight.promise;
+  }
+
+  async function requestErp(user, mapping, settings, route, { method = 'GET', body, headers = {}, timeoutMs = 110000 } = {}) {
+    const pathname = new URL(route, 'http://localhost').pathname;
+    const readOnly = method === 'GET' || method === 'POST' && ['/erp/pool-product/page', '/erp/product-draft/page'].includes(pathname);
+    let token = await erpToken(user, mapping, settings);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let upstream, raw;
+      try {
+        upstream = await fetchImpl(settings.erpBaseUrl.replace(/\/$/, '') + route, { method, body, headers: { ...headers, Authorization: `Bearer ${token}`, 'tenant-id': settings.erpTenantId }, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
+        raw = Buffer.from(await upstream.arrayBuffer());
+      } catch { throw Object.assign(new Error('互拓服务请求超时，请稍后重试。'), { status: 503, code: 'ERP_UPSTREAM_TIMEOUT' }); }
+      if (raw.byteLength > MAX_ERP_BODY_BYTES) throw Object.assign(new Error('互拓响应超过允许大小。'), { status: 502 });
+      let payload; try { payload = JSON.parse(raw.toString('utf8')); } catch { /* Forward non-JSON responses unchanged. */ }
+      const unauthorized = upstream.status === 401 || payload?.code === 401 || payload?.code === '401';
+      if (!unauthorized) return { upstream, raw, payload };
+      if (!readOnly || attempt === 1) {
+        if (erpTokens.get(user.id)?.accessToken === token) erpTokens.delete(user.id);
+        // Keep TDL login separate from upstream ERP authorization. No writes
+        // are replayed, even when the ERP returns HTTP 200 with business 401.
+        throw Object.assign(new Error(readOnly ? '互拓接口重新授权后仍不可用，请检查互拓账号权限后重试；原任务与商品记录已保留。' : '互拓接口授权已失效，本次写入未自动重发；请先查询原记录再继续。'), { status: 502, code: 'ERP_AUTH_EXPIRED' });
+      }
+      token = await erpToken(user, mapping, settings, token);
+    }
   }
 
   async function readRaw(request, maxBytes = MAX_ERP_BODY_BYTES) {
@@ -320,10 +368,9 @@ function createServer({ env = process.env, fetchImpl = (...args) => fetch(...arg
   }
   async function testErpAccount(user,mapping){
     if(!mapping?.enabled)throw Object.assign(new Error('请先保存互拓账号和密码'),{status:400});
-    const settings=erpSettings(),access=await erpToken(user,mapping,settings),summary={};
+    const settings=erpSettings(),summary={};
     for(const [label,route] of [['permissions','/system/auth/get-permission-info'],['dictionaries','/system/dict-data/list-all-simple'],['categories','/erp/category/list']]){
-      let upstream;try{upstream=await fetchImpl(settings.erpBaseUrl.replace(/\/$/,'')+route,{headers:{Authorization:`Bearer ${access}`,'tenant-id':settings.erpTenantId},redirect:'error',signal:AbortSignal.timeout(20000)});}catch{throw Object.assign(new Error('互拓连接检查超时，请稍后重试'),{status:503});}
-      const body=await upstream.json().catch(()=>null);
+      const {upstream,payload:body}=await requestErp(user,mapping,settings,route,{timeoutMs:20000});
       if(!upstream.ok||body?.code!==0)throw Object.assign(new Error('互拓登录或读取权限检查未通过'),{status:502});
       summary[label]=Array.isArray(body.data)?body.data.length:true;
     }
@@ -336,20 +383,16 @@ function createServer({ env = process.env, fetchImpl = (...args) => fetch(...arg
     const settings = erpSettings();
     if (pathname === '/erp/product-draft/add' && settings.draftApiConfirmed !== true) return json(response, 403, { error: '互拓草稿写入未由管理员启用。' });
     if (pathname === '/erp/product-draft/convert' && settings.draftConvertConfirmed !== true) return json(response, 403, { error: '互拓待审核转换未由管理员启用。' });
+    if (pathname === '/erp/product-addition/add' && settings.directSaveConfirmed !== true) return json(response, 403, { error: '互拓直接保存待审核未由管理员启用。' });
     const mapping = mappings.get(user.id);
     if (!mapping || !mapping.enabled) return json(response, 403, { error: '当前 TDL 账号尚未配置互拓账号，请联系管理员。' });
-    const token = await erpToken(user, mapping, settings);
     const url = new URL(request.url, 'http://localhost');
-    const target = `${settings.erpBaseUrl.replace(/\/$/, '')}${url.pathname}${url.search}`;
     const body = ['GET', 'HEAD'].includes(request.method) ? undefined : await readRaw(request);
-    const headers = { Accept: 'application/json', Authorization: `Bearer ${token}`, 'tenant-id': settings.erpTenantId };
+    const headers = { Accept: 'application/json' };
     for (const name of ['content-type', 'idempotency-key']) if (request.headers[name]) headers[name] = request.headers[name];
-    let upstream;
-    try { upstream = await fetchImpl(target, { method: request.method, redirect: 'error', headers, body, signal: AbortSignal.timeout(30000) }); }
-    catch { return json(response, 503, { error: '互拓服务请求超时，请稍后重试。' }); }
-    if (upstream.status === 401) { erpTokens.delete(user.id); return json(response, 401, { error: '互拓授权已失效，请联系管理员更新配置。' }); }
-    const raw = await upstream.arrayBuffer();
-    if (raw.byteLength > MAX_ERP_BODY_BYTES) return json(response, 502, { error: '互拓响应超过允许大小。' });
+    let upstream, raw;
+    try { ({upstream,raw}=await requestErp(user,mapping,settings,url.pathname+url.search,{method:request.method,body,headers})); }
+    catch (error) { return json(response,error.status||503,{code:error.code||'ERP_UNAVAILABLE',error:error.message}); }
     response.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
     response.end(Buffer.from(raw));
   }
@@ -367,13 +410,13 @@ function createServer({ env = process.env, fetchImpl = (...args) => fetch(...arg
       if(request.method==='PUT'){
         const body=await readJson(request,4096);
         if(Object.keys(body).some(key=>!['username','password'].includes(key)))return json(response,400,{error:'此入口只接受互拓账号和密码'});
-        await mappings.set(user.id,body);erpTokens.delete(user.id);
+        await mappings.set(user.id,body);invalidateErpToken(user.id);
       }
-      if(request.method==='DELETE'){await mappings.remove(user.id);erpTokens.delete(user.id);}
+      if(request.method==='DELETE'){await mappings.remove(user.id);invalidateErpToken(user.id);}
       const mapping = mappings.get(user.id);
       const settings=erpSettings(),ready=!!(mapping&&mapping.enabled&&validErpSettings(settings));
       const error=!mapping||!mapping.enabled?'请填写自己的互拓账号和密码。':!validErpSettings(settings)?'账号已保存，服务器连接设置暂不可用。':'';
-      return json(response, 200, { ready, error, account:{username:mapping?.username||'',hasPassword:!!mapping?.password,configured:!!mapping?.enabled}, config: ready ? { baseUrl: DEFAULT_ERP_PROXY_BASE, tenantId:'managed', username:mapping.username, canSubmitDrafts:settings.draftApiConfirmed===true, canConvertDrafts:settings.draftConvertConfirmed===true } : null });
+      return json(response, 200, { ready, error, account:{username:mapping?.username||'',hasPassword:!!mapping?.password,configured:!!mapping?.enabled}, config: ready ? { baseUrl: DEFAULT_ERP_PROXY_BASE, tenantId:'managed', username:mapping.username, canSubmitDrafts:settings.draftApiConfirmed===true, canConvertDrafts:settings.draftConvertConfirmed===true, canSavePending:settings.directSaveConfirmed===true } : null });
     }
     if(request.method==='POST'&&pathname==='/erp-config/test'){
       try{return json(response,200,await testErpAccount(user,mappings.get(user.id)));}catch(error){return json(response,error.status||503,{error:error.message});}
@@ -389,11 +432,13 @@ function createServer({ env = process.env, fetchImpl = (...args) => fetch(...arg
         const body=await readJson(request,1024*1024),current=erpSettings(),next={...current};
         for(const key of ['erpBaseUrl','erpTenantId','erpClientId'])if(Object.hasOwn(body,key))next[key]=String(body[key]||'').trim();
         if(Object.hasOwn(body,'erpClientSecret')&&String(body.erpClientSecret||''))next.erpClientSecret=String(body.erpClientSecret);
-        for(const key of ['draftApiConfirmed','draftConvertConfirmed'])if(Object.hasOwn(body,key))next[key]=body[key]===true;
-        let endpoint;try{endpoint=new URL(next.erpBaseUrl)}catch{return json(response,400,{error:'请输入有效的互拓 HTTPS API 地址。'})}
-        if(!allowedEndpoint(endpoint))return json(response,400,{error:'请使用 HTTPS 地址，或服务器已授权的测试服地址。'});
+        for(const key of ['draftApiConfirmed','draftConvertConfirmed','directSaveConfirmed'])if(Object.hasOwn(body,key))next[key]=body[key]===true;
+        let endpoint;try{endpoint=new URL(next.erpBaseUrl)}catch{return json(response,400,{error:`正式互拓地址固定为 ${formalErpBaseUrl}。`})}
+        const endpointBase=endpoint.href.replace(/\/$/,'');
+        if(endpointBase!==formalErpBaseUrl||!allowedEndpoint(endpoint))return json(response,400,{error:`正式互拓地址固定为 ${formalErpBaseUrl}。`});
+        next.erpBaseUrl=formalErpBaseUrl;
         if(!/^\d+$/.test(next.erpTenantId||''))return json(response,400,{error:'互拓租户 ID 必须是数字。'});
-        await mappings.setSettings(next);erpTokens.clear();return json(response,200,{serviceReady:validErpSettings(next),settings:publicErpSettings(next)});
+        await mappings.setSettings(next);invalidateErpToken();return json(response,200,{serviceReady:validErpSettings(next),settings:publicErpSettings(next)});
       }
     }
     if (pathname.startsWith('/erp-config/accounts/')) {
@@ -403,8 +448,8 @@ function createServer({ env = process.env, fetchImpl = (...args) => fetch(...arg
         try{return json(response,200,await testErpAccount({id:accountId},mappings.get(accountId)));}catch(error){return json(response,error.status||503,{error:error.message});}
       }
       const accountId = decodeURIComponent(pathname.slice('/erp-config/accounts/'.length));
-      if (request.method === 'PUT') { const body = await readJson(request, 4096);if(Object.keys(body).some(key=>!['username','password'].includes(key)))return json(response,400,{error:'账号映射只需互拓账号和密码'});const account=await mappings.set(accountId, body);erpTokens.delete(accountId);return json(response, 200, { account }); }
-      if (request.method === 'DELETE') { await mappings.remove(accountId);erpTokens.delete(accountId);return json(response, 200, { ok: true }); }
+      if (request.method === 'PUT') { const body = await readJson(request, 4096);if(Object.keys(body).some(key=>!['username','password'].includes(key)))return json(response,400,{error:'账号映射只需互拓账号和密码'});const account=await mappings.set(accountId, body);invalidateErpToken(accountId);return json(response, 200, { account }); }
+      if (request.method === 'DELETE') { await mappings.remove(accountId);invalidateErpToken(accountId);return json(response, 200, { ok: true }); }
     }
     if (pathname.startsWith('/erp/') || allowedErpRoutes.some(([method,pattern])=>request.method===method&&pattern.test(pathname))) {
       try { return await proxyErp(request, response, user); }

@@ -4,7 +4,7 @@
   const extension = location.protocol === 'chrome-extension:' && globalThis.chrome?.storage;
   if (extension) { const manifest = chrome.runtime.getManifest(); $('version').textContent = `v${manifest.version_name || manifest.version}`; }
   const defaultSelected = () => ['wsy', 'zwd', 'qcc', 'e3hui'].filter(key => Object.prototype.hasOwnProperty.call(FindTransport.platforms, key));
-  const initialState = () => ({ queryId: '', queryName: '', searchGroupId: '', thumbnail: '', fingerprint: '', base64: '', goodsId: '', mode: 'select', reviewMode: 'manual', baseline: '', reduction: 5, raw: [], total: null, phase: 'idle', message: '', searched: false, selected: defaultSelected(), selectionCustomized: false, platforms: {} });
+  const initialState = () => ({ queryId: '', queryName: '', searchGroupId: '', thumbnail: '', fingerprint: '', base64: '', goodsId: '', mode: 'select', searchMode: 'top', reviewMode: 'manual', baseline: '', reduction: 5, raw: [], total: null, phase: 'idle', message: '', searched: false, selected: defaultSelected(), selectionCustomized: false, platforms: {} });
   const imageData = value => typeof value === 'string' && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/i.test(value) && value.length <= 8 * 1024 * 1024 ? value : '';
   const selectedPlatforms = value => {
     if (!Array.isArray(value)) return defaultSelected();
@@ -18,6 +18,7 @@
     base.thumbnail = imageData(saved.thumbnail);
     base.goodsId = typeof saved.goodsId === 'string' ? saved.goodsId : '';
     base.mode = saved.mode === 'optimize' ? 'optimize' : 'select';
+    base.searchMode = saved.searchMode === 'detail' ? 'detail' : 'top';
     base.reviewMode = FindReview.mode(saved.reviewMode);
     base.baseline = typeof saved.baseline === 'string' || typeof saved.baseline === 'number' ? saved.baseline : '';
     base.reduction = typeof saved.reduction === 'string' || typeof saved.reduction === 'number' ? saved.reduction : 5;
@@ -162,7 +163,7 @@
     });
     const response = await fetch(`${desktopConnection.endpoint}/v1/jobs`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Desktop-Token': desktopConnection.token },
-      body: JSON.stringify({ query, items, searchIssues, platformSearches, queryId: state.queryId, queryName: state.queryName, searchGroupId: state.searchGroupId, mode: state.mode, reviewMode: state.reviewMode, goodsId: state.goodsId, baseline: state.baseline, reduction: state.reduction }),
+      body: JSON.stringify({ query, items, searchIssues, platformSearches, queryId: state.queryId, queryName: state.queryName, searchGroupId: state.searchGroupId, mode: state.mode, searchMode: state.searchMode, reviewMode: state.reviewMode, goodsId: state.goodsId, baseline: state.baseline, reduction: state.reduction }),
       credentials: 'omit', signal: AbortSignal.timeout(15000)
     });
     let result;
@@ -253,7 +254,7 @@
     }
   }
   function inputs() {
-    return { mode: document.querySelector('[name=mode]:checked').value, baseline: $('baseline').value, reduction: $('reduction').value, goodsId: $('goodsId').value };
+    return { mode: document.querySelector('[name=mode]:checked').value, searchMode: document.querySelector('[name=searchMode]:checked')?.value || state.searchMode || 'top', baseline: $('baseline').value, reduction: $('reduction').value, goodsId: $('goodsId').value };
   }
   function renderResults() {
     let result;
@@ -302,7 +303,7 @@
       const judgmentNote = comparison ? '<small class="match-score">' + esc(FindReview.scoreStatus(item, state.reviewMode)) + '</small><small>' + esc(item.imageSimilarityEngine) + '</small>' : '';
       const human = FindReview.decision(item);
         const review = comparison ? `<span class="review-state ${human ? 'reviewed' : ''}">${esc(FindReview.status(item, state.reviewMode))}</span>${human?.note ? `<small>审核备注：${esc(human.note)}</small>` : ''}<button type="button" data-review-index="${reviewIndex(item)}" ${busy || connectionBusy ? 'disabled' : ''}>${human ? '查看 / 修改审核' : '人工审核'}</button>` : '';
-      return `<tr data-id="${esc(item.id)}"><td><img src="${esc(item.imageUrl)}" referrerpolicy="no-referrer" alt="商品图"><small class="imageState">加载中</small></td><td>${esc(item.goodsId || '未提供款号')}<small>${esc(item.title)}</small>${item.platformTags?.length ? '<small>' + esc(item.platformTags.join(' · ')) + '</small>' : ''}${item.goodsMatch ? '<small>款号一致，需核对商品</small>' : ''}</td><td>¥${item.price.toFixed(2)}</td><td>${item.saving == null ? '无基准成本' : `¥${item.saving.toFixed(2)}`}</td><td class="judgment" data-verdict="${esc(verdict)}"><strong>${comparison ? '模型建议：' : ''}${esc(judgment)}</strong>${review}${judgmentNote}${details}</td><td>${esc(item.shopName || '档口名缺失')}<small>ID：${esc(item.supplierId || '平台未提供')}</small></td><td>${esc(item.address)}</td><td><a href="${esc(item.detailUrl)}" target="_blank" rel="noreferrer">打开详情</a></td></tr>`;
+      return `<tr data-id="${esc(item.id)}"><td><img src="${esc(item.imageUrl)}" referrerpolicy="no-referrer" alt="商品图"><small class="imageState">加载中</small></td><td>${esc(item.goodsId || '未提供款号')}<small>${esc(item.title)}</small>${item.platformTags?.length ? '<small>' + esc(item.platformTags.join(' · ')) + '</small>' : ''}${item.goodsMatch ? '<small>款号一致，需核对商品</small>' : ''}</td><td>¥${item.price.toFixed(2)}</td><td>${item.saving == null ? '无基准成本' : `¥${item.saving.toFixed(2)}`}</td><td class="judgment" data-verdict="${esc(verdict)}"><strong>${comparison ? '模型建议：' : ''}${esc(judgment)}</strong>${review}${judgmentNote}${details}</td><td>${esc(item.shopName || '档口名缺失')}<small>ID：${esc(item.supplierId || '平台未提供')}</small></td><td><strong>发货地：</strong>${esc(item.address || '平台未提供')}</td><td><a href="${esc(item.detailUrl)}" target="_blank" rel="noreferrer">打开详情</a></td></tr>`;
     }).join('');
     $('results').querySelectorAll('img').forEach(img => {
       const update = () => { img.parentElement.querySelector('.imageState').textContent = img.naturalWidth > 0 ? `已加载 ${img.naturalWidth}×${img.naturalHeight}` : '加载失败，可打开详情检查'; };
@@ -332,7 +333,7 @@
     let reviewable = [];
     try { const result = FindCore.evaluate(state.raw, state); reviewable = [...result.kept, ...result.excluded.filter(item => item.scoreExcluded)]; } catch { /* Invalid cost inputs have no reviewable results. */ }
     $('reviewNext').disabled = busy || connectionBusy || !reviewable.some(item => !FindReview.belowThreshold(item, state.raw) && FindReview.comparison(item) && !FindReview.decision(item));
-    document.querySelectorAll('[name=mode],#goodsId,#baseline,#reduction,#platformChoices input').forEach(el => { el.disabled = busy || connectionBusy; });
+    document.querySelectorAll('[name=mode],[name=searchMode],#goodsId,#baseline,#reduction,#platformChoices input').forEach(el => { el.disabled = busy || connectionBusy; });
     $('costFields').hidden = state.mode !== 'optimize';
     $('sourceImage').hidden = !state.base64; if (state.base64) $('sourceImage').src = state.base64; else $('sourceImage').removeAttribute('src');
     workspace?.render();
@@ -440,7 +441,7 @@
         applyScoredResults();
         status('platform_search', `${FindTransport.platforms[key].name}：${record.message}；各平台独立搜图，识别需你确认开始。`); renderResults();
         if (reviewOnly && !sendToDesktop) enqueueScore(record.items);
-      });
+      }, { mode: state.searchMode });
       if (token !== generation) return;
       if (!reviewOnly) {
         // Keep a final platform record even when a late callback was missed.
@@ -525,6 +526,7 @@
     document.querySelectorAll('#platformChoices input').forEach(el => { el.checked = state.selected.includes(el.value); });
     $('goodsId').value = state.goodsId; $('baseline').value = state.baseline; $('reduction').value = state.reduction;
     document.querySelector('[name=mode][value=' + state.mode + ']').checked = true;
+    document.querySelector('[name=searchMode][value=' + state.searchMode + ']')?.click();
     status(state.phase, state.message || '图片已导入，请点击搜索。');
     renderResults(); renderPlatforms(); controls();
   }
@@ -548,7 +550,7 @@
       if(sender.id!==chrome.runtime.id||!message.command||!imageData(message.command.imageData)){sendResponse({ok:false,error:'自动买手图搜请求无效'});return false;}
       if(initializing||busy||workspace.running()){sendResponse({ok:false,error:'浏览器工作台正忙，请稍后继续'});return false;}
       busy=true;controls();
-      void FindTransport.searchAll(message.command.imageData,message.command.id,['wsy','zwd','qcc','e3hui'],()=>{}).then(result=>sendResponse({ok:true,result}),error=>sendResponse({ok:false,error:String(error.message||error).slice(0,180)})).finally(()=>{busy=false;controls();});
+      void FindTransport.searchAll(message.command.imageData,message.command.id,['wsy','zwd','qcc','e3hui'],()=>{}, {mode: message.command.searchMode || 'top'}).then(result=>sendResponse({ok:true,result}),error=>sendResponse({ok:false,error:String(error.message||error).slice(0,180)})).finally(()=>{busy=false;controls();});
       return true;
     }
     if (message?.type !== 'PRODUCT_COMPARISON_DESKTOP_SEARCH') return false;
@@ -614,7 +616,7 @@
   });
   $('reviewFilter').addEventListener('change', () => { showAll = false; renderResults(); });
   $('reviewMode').addEventListener('change', () => { state.reviewMode = FindReview.mode($('reviewMode').value); renderResults(); void persist(); });
-  document.querySelectorAll('[name=mode],#goodsId,#baseline,#reduction').forEach(el => el.addEventListener('change', () => {
+  document.querySelectorAll('[name=mode],[name=searchMode],#goodsId,#baseline,#reduction').forEach(el => el.addEventListener('change', () => {
     Object.assign(state, inputs()); controls(); renderResults(); void persist();
   }));
   document.querySelectorAll('#platformChoices input').forEach(el => el.addEventListener('change', () => {

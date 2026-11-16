@@ -3,6 +3,7 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.FindReview = api;
 })(globalThis, function () {
+  const sales=typeof module==='object'&&module.exports?require('./taobao-sales'):globalThis.TaobaoSales;
   const labels = Object.freeze({ likely_same: '疑似同款', similar: '相似款', different: '明显不同', uncertain: '无法判断' });
   const mode = value => value === 'direct' ? 'direct' : 'manual';
   const comparison = item => item?.imageSimilaritySource === 'qwen_multimodal_v1' && Object.hasOwn(labels, item.visualComparison?.verdict) ? item.visualComparison : null;
@@ -71,7 +72,20 @@
   };
   const excluded = (item, items) => belowThreshold(item, items) || (decision(item)?.verdict || comparison(item)?.verdict) === 'different';
   const thresholdText = threshold => `${threshold} 分${threshold === minimumScore ? '及以下' : '以下'}`;
+  function taobaoPriority(item) {
+    const human=decision(item),verdict=human?.verdict||comparison(item)?.verdict,score=rankingScore(item);
+    if(human?.verdict==='likely_same')return 0;
+    if(human?.verdict==='different')return 5;
+    if(verdict==='different')return 4;
+    if(['likely_same','similar'].includes(verdict))return score!==null&&score>=85?1:2;
+    return 3;
+  }
+  function compareTaobao(a,b) {
+    return taobaoPriority(a)-taobaoPriority(b)||(sales?.compare(a,b)||0)
+      ||(rankingScore(b)??-1)-(rankingScore(a)??-1);
+  }
   function compare(a, b, reviewMode = 'manual') {
+    if(a.platform==='taobao'&&b.platform==='taobao')return compareTaobao(a,b);
     const rank = item => ({ likely_same: 4, similar: 3, uncertain: 2, different: 0 }[effective(item, reviewMode) || comparison(item)?.verdict] ?? 1);
     const score = item => rankingScore(item) ?? -1;
     return rank(b) - rank(a) || score(b) - score(a);
@@ -128,5 +142,5 @@
     : filter === 'pending' ? !!comparison(item) && !decision(item)
     : filter === 'recommended' ? !!comparison(item) && !decision(item) && ['likely_same', 'similar', 'uncertain'].includes(comparison(item).verdict)
     : filter === 'final' ? !!effective(item, reviewMode) : true;
-  return { labels, mode, comparison, modelScore, signature, decision, apply, effective, effectiveScore, corrected, compare, scoreText, scoreStatus, summary, highSimilarityPriceGroups, text, status, matchesFilter, minimumScore, exclusionThreshold, thresholdText, excluded, rankingScore, belowThreshold };
+  return { labels, mode, comparison, modelScore, signature, decision, apply, effective, effectiveScore, corrected, compare, compareTaobao, taobaoPriority, scoreText, scoreStatus, summary, highSimilarityPriceGroups, text, status, matchesFilter, minimumScore, exclusionThreshold, thresholdText, excluded, rankingScore, belowThreshold };
 });

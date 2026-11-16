@@ -2,7 +2,23 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const {buyerTaskComparisonPreview,queueBuyerCandidateGallery,gallerySlot}=require('../desktop/buyer-preview');
 
 const image='data:image/jpeg;base64,fixture';
+
+test('尺码图预览保留原索引、失败项可重试，放大取真实高清图且不能访问任意索引',async()=>{
+  const {supplierImagePreviews}=require('../desktop/buyer-preview');let fail=true,fullCalls=0;
+  const task={automation:{supplierDetails:{images:['https://imgcdn.wsy.com/size-unique1.jpg','https://imgcdn.wsy.com/size-unique2.jpg']}}};
+  const args={task,indexes:[0,1],downloadImagePreview:async url=>{if(url.includes('unique1')&&fail)throw Error('network');return{dataUrl:image,width:420,height:300};},downloadFull:async()=>{fullCalls++;return{dataUrl:'data:image/jpeg;base64,full',evidence:{width:1600,height:1100}};}};
+  const first=await supplierImagePreviews(args);assert.equal(first[0].index,0);assert.ok(first[0].error);assert.equal(first[1].index,1);assert.equal(first[1].image,image);
+  fail=false;assert.equal((await supplierImagePreviews(args))[0].image,image);
+  assert.equal((await supplierImagePreviews({...args,indexes:[1],full:true}))[0].width,1600);assert.equal(fullCalls,1);
+  await assert.rejects(()=>supplierImagePreviews({...args,indexes:[2]}),/请求无效/);
+  await assert.rejects(()=>supplierImagePreviews({...args,full:true}),/一次仅能放大/);
+});
 const candidate={platform:'qcc',detailUrl:'https://www.17qcc.com/item/123.html',imageUrl:'https://pics.17qcc.com/item.jpg',title:'夹克',price:99};
+test('淘宝人工对照展示原商品、供应商参考图和真实候选图，保持候选索引',async()=>{
+  const task={automation:{source:{images:[]},supplierDetails:{images:['https://imgcdn.wsy.com/market-reference.jpg']},checkpoints:{}},marketplaceCandidates:[{platform:'taobao',detailUrl:'https://item.taobao.com/item.htm?id=12345678',imageUrl:'https://img.alicdn.com/12345678.jpg'}]};
+  const result=await buyerTaskComparisonPreview({task,kind:'taobao',indexes:[0],workflow:{image:async()=>Buffer.alloc(80)},downloadImagePreview:async()=>({dataUrl:image,width:420,height:420}),downloadCandidate:async()=>({dataUrl:image,evidence:{width:800,height:800}})});
+  assert.equal(result.sourceGallery.length,2);assert.equal(result.candidates[0].index,0);assert.equal(result.candidates[0].image,image);
+});
 function fixture(source={}){return{id:'f85d70dc-a07e-4715-a968-2fcf94729400',automation:{source,searchCandidates:[candidate,{...candidate,detailUrl:'https://attacker.example/item/2'}],checkpoints:{supplierComparison:{result:{items:[{platform:'qcc',detailUrl:candidate.detailUrl,visualComparison:{verdict:'similar',score:81,matches:['领型相近'],differences:['口袋不同']}}]}}}}};}
 
 test('供应商对照把来源链接完整图集作为缩略图返回，压缩并缓存图片，候选地址仍受验证',async()=>{

@@ -29,7 +29,7 @@
         price: number(item.price), imageUrl: httpUrl(item.imgUrl),
         detailUrl: /^\d+$/.test(id) ? `https://www.wsy.com/item.htm?id=${id}` : '',
         supplierId: String(item.uid ?? ''), shopName: String(item.shopid ?? ''),
-        address: String(item.address ?? ''), category: String(item.cid_name ?? ''),
+        address: String(item.address || item.shippingAddress || item.deliveryAddress || item.sendAddress || ''), category: String(item.cid_name ?? ''),
         similarity: similarity != null && similarity >= 0 && similarity <= 1 ? similarity : null,
         similaritySource: similarity != null && similarity >= 0 && similarity <= 1 ? 'platform' : 'none'
       };

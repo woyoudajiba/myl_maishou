@@ -18,6 +18,9 @@ const same = (left, right, label) => assert.equal(hash(left), hash(right), label
 const dependencies = checkAsar(bundle);
 const bundledPackage = JSON.parse(asar.extractFile(bundle, 'package.json'));
 assert.equal(bundledPackage.version, canonical);
+for (const file of ['desktop/buyer-draft-view.js', 'desktop/buyer-drafts-renderer.js']) {
+  same(fs.readFileSync(path.join(root, file)), asar.extractFile(bundle, path.normalize(file)), file);
+}
 let appSourceFiles = 0;
 for (const item of asar.listPackage(bundle)) {
   const file = item.replace(/\\/g, '/').replace(/^\//, '');

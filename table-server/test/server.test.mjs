@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createOnlineTableServer } from '../server.mjs';
 import { startFetchSafeServer } from '../../test/http-fixture.js';
+import { DatabaseSync } from 'node:sqlite';
 
 async function setup(t, options = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'online-table-'));
@@ -22,6 +23,61 @@ async function tableFixture(t, options={}) {
   await call('/rows','POST',{rows:[{articleNo:'A1',sourceType:'taobao',sourceUrl:'https://item.taobao.com/item.htm?id=12345678',title:'原始标题'}]});
   return {call,origin,headers,base};
 }
+
+test('仅当前绑定任务可回填空白供应商货号，不覆盖已有值、来源或确认人',async t=>{
+  const {call}=await tableFixture(t);let row=(await call()).body.rows[0];
+  row=(await call(`/rows/${row.id}`,'PATCH',{ifVersion:row.version,patch:{articleNo:'',humanStatus:'approved'}})).body.row;
+  const own=crypto.randomUUID(),other=crypto.randomUUID();row=(await call(`/claim/${row.id}`,'POST',{taskId:own})).body.row;
+  const patch={supplierArticleNo:'D2603',automationStep:'collection_wait',automationState:'waiting'};
+  assert.equal((await call(`/rows/${row.id}`,'PATCH',{ifVersion:row.version,taskId:other,patch})).response.status,409);
+  assert.equal((await call(`/rows/${row.id}`,'PATCH',{ifVersion:row.version,patch})).response.status,409);
+  const confirmed=row.confirmedBy,source=row.sourceUrl;row=(await call(`/rows/${row.id}`,'PATCH',{ifVersion:row.version,taskId:own,patch})).body.row;
+  assert.equal(row.articleNo,'D2603');assert.equal(row.confirmedBy,confirmed);assert.equal(row.sourceUrl,source);
+  const conflict=await call(`/rows/${row.id}`,'PATCH',{ifVersion:row.version,taskId:own,patch:{supplierArticleNo:'OTHER'}});assert.equal(conflict.response.status,409);assert.equal((await call()).body.rows[0].articleNo,'D2603');
+});
+
+test('任务确认人来自认证身份，后续编辑/领取/任务回写不能覆盖，取消后重确认记录新用户',async t=>{
+  const users={admin:{id:'admin',displayName:'管理员',isAdmin:true},buyer:{id:'buyer',displayName:'吴少凡'},other:{id:'other',displayName:'另一位买手'}};
+  const {origin,headers}=await setup(t,{authUrl:'https://auth.fixture/me',fetchImpl:async(_url,options)=>Response.json({user:users[options.headers.Authorization.split(' ')[1]]})});
+  const call=(route='',method='GET',body,who='admin')=>request(origin,route,{method,headers:{...headers,Authorization:`Bearer ${who}`,'X-Table-User':'spoofed-user'},...(body===undefined?{}:{body:JSON.stringify(body)})});
+  const table=(await call('/api/tables','POST',{})).body.table,base=`/api/tables/${table.id}`;
+  let row=(await call(base+'/rows','POST',{rows:[{sourceUrl:'https://item.taobao.com/item.htm?id=12345678',note:'已有备注',confirmedBy:'伪造确认人'}]})).body.rows[0];
+  assert.equal(row.confirmedBy,'');
+  row=(await call(base+`/rows/${row.id}`,'PATCH',{ifVersion:row.version,patch:{humanStatus:'approved',confirmedBy:'伪造确认人',confirmedUserId:'fake'}},'buyer')).body.row;
+  assert.equal(row.confirmedBy,'吴少凡');assert.equal(row.confirmedUserId,'buyer');assert.ok(Number.isFinite(Date.parse(row.confirmedAt)));const at=row.confirmedAt;
+  row=(await call(base+`/rows/${row.id}`,'PATCH',{ifVersion:row.version,patch:{title:'别人修改标题',confirmedBy:'覆盖'}},'other')).body.row;
+  assert.equal(row.confirmedBy,'吴少凡');assert.equal(row.confirmedAt,at);
+  row=(await call(base+`/rows/${row.id}`,'PATCH',{ifVersion:row.version,patch:{humanStatus:'pending'}},'other')).body.row;assert.equal(row.confirmedBy,'');assert.equal(row.confirmedAt,'');
+  row=(await call(base+`/rows/${row.id}`,'PATCH',{ifVersion:row.version,patch:{humanStatus:'approved'}},'other')).body.row;assert.equal(row.confirmedBy,'另一位买手');
+  row=(await call(base+`/claim/${row.id}`,'POST',{taskId:crypto.randomUUID()},'buyer')).body.row;
+  row=(await call(base+`/rows/${row.id}`,'PATCH',{ifVersion:row.version,taskId:row.taskId,patch:{automationState:'waiting',automationStep:'collection_wait'}},'buyer')).body.row;
+  assert.equal(row.confirmedBy,'另一位买手');assert.match(row.updatedBy,/吴少凡/);assert.equal(row.note,'已有备注');
+  const matched=(await call(base+'/find?search='+encodeURIComponent('另一位买手'))).body;assert.equal(matched.row.id,row.id);assert.ok(matched.matchFields.includes('confirmedBy'));assert.equal((await call(base+'?search='+encodeURIComponent('另一位买手'))).body.rows[0].id,row.id);
+  const entry=(await call(base+'/history')).body.history[0],plan=(await call(base+`/rollback/${entry.id}`)).body;
+  await call(base+`/rollback/${entry.id}`,'POST',{ifRevision:plan.revision});assert.equal((await call(base)).body.rows[0].confirmedBy,'另一位买手','回档不能更改已领取任务的确认归属');
+});
+
+test('旧数据只按真实确认历史补回确认人，最后修改人不被误认；无证据留空',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'table-confirmation-migration-'));let server;
+  t.after(async()=>{await server?.close();await fs.rm(dir,{recursive:true,force:true});});
+  server=createOnlineTableServer({port:0,dataDir:dir,logger:{error(){}}});let origin=await startFetchSafeServer(server);
+  const call=(route,method='GET',body,actor='entry-user')=>request(origin,route,{method,headers:{'Content-Type':'application/json','X-Table-User':actor},...(body===undefined?{}:{body:JSON.stringify(body)})});
+  const table=(await call('/api/tables','POST',{})).body.table,base=`/api/tables/${table.id}`;
+  let rows=(await call(base+'/rows','POST',{rows:[{sourceUrl:'https://item.taobao.com/item.htm?id=12345678'},{sourceUrl:'https://item.taobao.com/item.htm?id=12345679',humanStatus:'approved'}]})).body.rows;
+  const approved=(await call(base+`/rows/${rows[0].id}`,'PATCH',{ifVersion:rows[0].version,patch:{humanStatus:'approved'}},'wu (tdl-007)')).body.row;
+  await call(base+`/rows/${approved.id}`,'PATCH',{ifVersion:approved.version,patch:{title:'自动更新后的标题'}},'other-user');
+  const missingId=rows[1].id,approvedId=rows[0].id;await server.close();server=null;
+  const db=new DatabaseSync(path.join(dir,'online-tables.sqlite'));
+  db.prepare("UPDATE table_history SET actor=? WHERE actor=?").run('吴少凡 (tdl-007)','wu (tdl-007)');
+  // Simulate the previous schema, and remove the second row's approval evidence.
+  for(const entry of db.prepare('SELECT id,changes_json FROM table_history').all()){
+    const changes=JSON.parse(entry.changes_json).filter(change=>change.rowId!==missingId);db.prepare('UPDATE table_history SET changes_json=? WHERE id=?').run(JSON.stringify(changes),entry.id);
+  }
+  for(const column of ['confirmed_by','confirmed_user_id','confirmed_at'])db.exec(`ALTER TABLE rows DROP COLUMN ${column}`);db.close();
+  server=createOnlineTableServer({port:0,dataDir:dir,logger:{error(){}}});origin=await startFetchSafeServer(server);
+  rows=(await call(base)).body.rows;const recovered=rows.find(row=>row.id===approvedId),unknown=rows.find(row=>row.id===missingId);
+  assert.equal(recovered.confirmedBy,'吴少凡');assert.equal(recovered.confirmedUserId,'tdl-007');assert.equal(recovered.confirmedAt,approved.confirmedAt);assert.match(recovered.updatedBy,/other-user/);assert.equal(unknown.confirmedBy,'');
+});
 
 test('失败的批量写入不留下半份商品、历史记录或事件',async t=>{
   const {call}=await tableFixture(t);

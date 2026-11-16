@@ -3,6 +3,13 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 const path=require('node:path');
+test('Top 搜索每个平台最多保留25条，详细搜索保留全部候选',()=>{
+  const context=vm.createContext({chrome:{},setTimeout,clearTimeout,URL});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../transport.js'),'utf8'),context);
+  const items=Array.from({length:31},(_,index)=>({id:index}));
+  assert.equal(context.FindTransport.limitItems(items,'top').length,25);
+  assert.equal(context.FindTransport.limitItems(items,'detail').length,31);
+});
 test('网商园文档已可访问但标签仍loading时，立即注入消息桥而不等待document_idle',async()=>{
   let injected=false,searches=0;
   const chrome={tabs:{query:async()=>[],create:async()=>({id:1,url:'https://www.wsy.com/new/search/image'}),

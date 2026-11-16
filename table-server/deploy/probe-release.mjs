@@ -28,6 +28,9 @@ try {
   let remote=(await mutate(base+`/rows/${found.row.id}`,'PATCH',{ifVersion:found.row.version,patch:{humanStatus:'approved'}})).row;
   const previousTaskId='11111111-1111-4111-8111-111111111111',newTaskId='22222222-2222-4222-8222-222222222222';
   remote=(await mutate(base+`/claim/${remote.id}`,'POST',{taskId:previousTaskId})).row;
+  remote=(await mutate(base+`/rows/${remote.id}`,'PATCH',{ifVersion:remote.version,taskId:previousTaskId,patch:{supplierArticleNo:'SKU-PROBE-001'}})).row;
+  assert.equal(remote.articleNo,'SKU-PROBE-001');
+  const badSku=await fetch(origin+base+`/rows/${remote.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({ifVersion:remote.version,taskId:previousTaskId,patch:{supplierArticleNo:'OTHER'}})});assert.equal(badSku.status,409);
   remote=(await mutate(base+`/rows/${remote.id}`,'PATCH',{ifVersion:remote.version,patch:{automationState:'attention',automationStep:'supplier_compare',automationError:'候选未识别'}})).row;
   const restarted=(await mutate(base+`/restart/${remote.id}`,'POST',{previousTaskId,taskId:newTaskId,ifVersion:remote.version})).row;
   assert.equal(restarted.taskId,newTaskId);assert.equal(restarted.automationState,'queued');assert.equal(restarted.automationStep,'source');
@@ -35,5 +38,5 @@ try {
   assert.equal(unsafe.status,409,'source/new task cannot be reclaimed again');
   const history = await request(base + '/history'); assert.ok(history.history.length > 0);
   assert.equal(service.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
-  console.log(JSON.stringify({ backupMigrationVerified: true, blankRowsVerified: true, productCountsVerified: true, searchAndLocateVerified: true, crossDeviceSupplierRestartVerified: true, historyVerified: true }));
+  console.log(JSON.stringify({ backupMigrationVerified: true, blankRowsVerified: true, productCountsVerified: true, searchAndLocateVerified: true, crossDeviceSupplierRestartVerified: true, supplierArticleBackfillVerified:true, historyVerified: true }));
 } finally { await service.close(); }

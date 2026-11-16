@@ -91,7 +91,7 @@ async function main() {
   fs.mkdirSync(desktopTarget, { recursive: true });
   fs.mkdirSync(releaseDir, { recursive: true });
   if (fs.existsSync(stageDir)) {
-    const allowedStageFiles = new Set(['desktop', 'package.json', '.codex-release-stage', '.npmrc', 'review.js', 'review-ui.js', 'review.css', 'vision-protocol.js', 'image-policy.js', 'vision-queue.js']);
+    const allowedStageFiles = new Set(['desktop', 'package.json', '.codex-release-stage', '.npmrc', 'taobao-sales.js', 'review.js', 'review-ui.js', 'review.css', 'vision-protocol.js', 'image-policy.js', 'vision-queue.js']);
     const existingPackage = path.join(stageDir, 'package.json');
     const validStage = fs.readdirSync(stageDir).every(name => allowedStageFiles.has(name)) &&
       fs.existsSync(existingPackage) && [numericVersion, version, updateVersion].includes(JSON.parse(fs.readFileSync(existingPackage, 'utf8')).version) &&
@@ -105,7 +105,7 @@ async function main() {
   const stagedDesktop = path.join(appStage, 'desktop');
   fs.mkdirSync(stagedDesktop, { recursive: true });
   fs.writeFileSync(path.join(appStage, '.codex-release-stage'), releaseMarker, 'utf8');
-  for (const file of ['main.js', 'updates.js', 'updates-renderer.js', 'douyin.js', 'douyin-renderer.js', 'buyer-renderer.js','buyer-auto-renderer.js','buyer-import.js','buyer-engine.js','buyer-settings.js','online-table-client.js','online-task-binding.js','buyer-providers.js','buyer-evidence.js','buyer-files.js','buyer-preview.js','model-retry.js', 'extension.js', 'help-renderer.js', 'accounts.js', 'platform-accounts.js', 'buyer-workflow.js', 'buyer-source.js', 'pairing.js', 'models.js', 'images.js', 'comparison.js', 'bridge-server.js', 'preload.js', 'renderer.js', 'index.html', 'style.css']) {
+  for (const file of ['main.js', 'updates.js', 'updates-renderer.js', 'douyin.js', 'douyin-renderer.js', 'buyer-renderer.js','buyer-auto-renderer.js','buyer-draft-view.js','buyer-drafts-renderer.js','buyer-import.js','buyer-engine.js','buyer-settings.js','online-table-client.js','online-task-binding.js','buyer-providers.js','buyer-duplicate.js','product-code.js','buyer-evidence.js','buyer-mapping.js','size-order.js','buyer-files.js','buyer-preview.js','model-retry.js', 'extension.js', 'help-renderer.js', 'accounts.js', 'platform-accounts.js', 'buyer-workflow.js', 'buyer-source.js', 'pairing.js', 'models.js', 'images.js', 'comparison.js', 'bridge-server.js', 'preload.js', 'renderer.js', 'index.html', 'style.css']) {
     fs.copyFileSync(path.join(desktopDir, file), path.join(stagedDesktop, file));
   }
   fs.mkdirSync(path.join(stagedDesktop,'erp'),{recursive:true});
@@ -113,7 +113,7 @@ async function main() {
   fs.copyFileSync(path.join(desktopDir,'buyer-links.js'),path.join(stagedDesktop,'buyer-links.js'));
   fs.mkdirSync(path.join(stagedDesktop, 'assets'), { recursive: true });
   for (const file of ['app-icon.png', 'app-icon.ico', '买手上架测试模板.xlsx']) fs.copyFileSync(path.join(desktopDir, 'assets', file), path.join(stagedDesktop, 'assets', file));
-  for (const file of ['review.js', 'review-ui.js', 'review.css', 'vision-protocol.js', 'image-policy.js', 'vision-queue.js']) {
+  for (const file of ['taobao-sales.js', 'review.js', 'review-ui.js', 'review.css', 'vision-protocol.js', 'image-policy.js', 'vision-queue.js']) {
     fs.copyFileSync(path.join(root, file), path.join(appStage, file));
   }
   fs.writeFileSync(path.join(appStage, 'package.json'), JSON.stringify({
@@ -190,9 +190,12 @@ async function main() {
     '8. 单图可直接选图搜索；多图点击“批量添加图片”（每组最多10张），逐张设置款号或成本后点击“依次搜索未搜索图片”。搜图本身不会调用模型。',
     '9. 识别结果优先展示待人工核对、需重试、已排除和确认同款。按平台和状态筛选，直接确认同款、排除或无法判断，无需重新评分；未完成候选自动重试最多3次，手动开启新一轮后恢复3次自动重试额度。备注只留档，不会自动训练模型。“软件更新”登录后自动检查，发现新版可忽略公告或立即下载。',
     '10. 自动买手可导入 XLSX、CSV、TSV，每行一个商品链接，单批及本机任务总量最多500件。分享文案会自动提取链接；正常商品自动排队，异常商品单独进入待处理。也可用辅助工具批量导入最多50张商品图。',
-    '11. 淘宝需在加载找商品插件的同一浏览器登录。安全验证会暂停淘宝队列；完成验证后继续，失败项可单独重试。买手工作台首先导入运营链接；自动任务和例外在同页追踪，识别记录用于查看比对和审核，抖音主图是可选的辅助输入。',
+    '11. 淘宝需在加载找商品插件的同一浏览器登录。安全验证会暂停淘宝队列：有官方验证链接时自动打开，任务详情也可点“打开淘宝验证页”；没有链接时打开淘宝搜索页，请在搜同款入口手动处理。完成后回到原任务点击继续。客户端升级后，务必在使用说明更新插件文件并到浏览器扩展管理页重新加载。买手工作台首先导入运营链接；自动任务和例外在同页追踪，识别记录用于查看比对和审核，抖音主图是可选的辅助输入。',
     '12. 第一阶段未推进时，查看商品卡片或详情中的原因及处理按钮。客户端会提示插件未连接、版本待确认、需要更新或页面采集超时。更新插件文件后必须在浏览器扩展管理页点击重新加载，再重新打开插件工作台。第二阶段找供应商时可逐张查看商品链接图集和候选详情图；人工确认同款后可以直接继续下一步，也可跳转到识别与复核查看模型细节，跳转会定位到相似度最高的候选。',
-    '13. 点击表格商品行的行号、状态、只读字段或空白处，可查看该商品的流程详情；编辑标题和备注仍在单元格内进行。流程顶部显示主图和当前步骤，关闭、返回表格以及图片、平台、资料、记录导航始终可用。另一台电脑的流程只读查看，供应商搜索/比对异常可点“本机重新开始”；互拓提交中的任务必须回原处理电脑核对，避免重复建商品。队列暂停后点击“继续”，当前没有一键批量重试异常商品。',
+    '13. 点击表格商品行的行号、状态、只读字段或空白处，可查看该商品的流程详情；标题可直接编辑，备注在更多字段中编辑；确认人由实际确认用户自动记录。流程顶部显示主图和当前步骤，关闭、返回表格以及图片、平台、资料、记录导航始终可用。另一台电脑的流程只读查看，供应商搜索/比对异常可点“本机重新开始”；互拓提交中的任务必须回原处理电脑核对，避免重复建商品。队列暂停后点击“继续”，当前没有一键批量重试异常商品。',
+    '14. 淘宝图片对比结果优先人工确认同款及85分以上同款/相似款建议，同组按销量排序，明确不同款与人工排除置后，销量缺失时显示未采集。对照原商品、供应商参考图片和淘宝候选图，人工点击确认同款并继续后才进入互拓采集；排除和无法判断不会采集。旧版已审核任务可继续原任务以恢复有效人工结论，不需要因为旧模型建议仅为相似款而重复识别。',
+    '15. 商品录入与处理通过顶部选品表、商品进度和导入商品切换。网页版选品表位于 https://wsfile.cn/maishou/table/，使用TDL登录，与客户端同步。互拓采集正常每30秒查询原记录，临时错误每60秒继续；程序退出或队列暂停时停止查询，恢复后沿用原商品ID。平台账号加密保存在本机，正常更新后保留，设置页可以修改。',
+    '16. 完整商品直接保存到正式互拓待审核，跳过草稿箱；最终审核上架仍由人工在互拓完成。网商园店名与档口位置分开提取，模型从互拓完整目录选择供应商并统一填写字典和属性，软件详情可查看候选及依据。新增前保存本机提交检查点，超时后只查询原商品编码，不自动重发；旧的已确认草稿回执保留。',
     '',
     `本机已经解压好的插件目录：${unpackedTarget}`,
     'TDL密码不会保存；记住登录、平台账号及模型Key使用当前Windows用户的系统安全存储加密。',

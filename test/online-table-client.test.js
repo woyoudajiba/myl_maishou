@@ -64,3 +64,11 @@ test('回档或人工编辑后，原任务只重试自己的流程回写，保�
   requests.length=0;
   await assert.rejects(()=>client.updateTask(rowId,'other-task',{automationState:'completed'},2),error=>error.status===409);assert.equal(requests.length,1);
 });
+
+
+test('供应商货号随当前任务回写，保留任务ID和版本门禁，不接受普通articleNo覆盖',async()=>{
+  const {OnlineTableClient}=require('../desktop/online-table-client'),requests=[];
+  const client=new OnlineTableClient({tableId:'11111111-1111-4111-8111-111111111111',authToken:'fixture',transport:async(_url,options)=>{requests.push(JSON.parse(options.body));return Response.json({row:{version:3,articleNo:'D2603'}});}});
+  await client.updateTask('22222222-2222-4222-8222-222222222222','task-id',{supplierArticleNo:'D2603',articleNo:'不要覆盖',automationStep:'collection_wait'},2);
+  assert.deepEqual(requests[0].patch,{supplierArticleNo:'D2603',automationStep:'collection_wait'});assert.equal(requests[0].taskId,'task-id');assert.equal(requests[0].ifVersion,2);
+});

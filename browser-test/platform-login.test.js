@@ -45,7 +45,7 @@ test('实际桌面平台账号添加编辑删除、密码不回显、重新登�
   await fs.writeFile(bootstrap,`const {app}=require('electron');app.setPath('userData',${JSON.stringify(path.join(dir,'profile'))});globalThis.fetch=async url=>{if(!String(url).startsWith('https://wsfile.cn/myladmin/api/auth/'))throw new Error('测试禁止外网');const user={id:'platform-qa',username:'platform-qa',displayName:'平台测试'};return Response.json(String(url).endsWith('/login')?{token:'fixture-token',expiresAt:new Date(Date.now()+3600000).toISOString(),user}:{user,ok:true})};require(${JSON.stringify(path.join(root,'desktop/main.js'))});`);
   const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
   app=await _electron.launch({executablePath:path.join(root,'desktop/node_modules/electron/dist/electron.exe'),args:[bootstrap],env});let page=await app.firstWindow();
-  await page.locator('#username').fill('platform-qa');await page.locator('#password').fill('fixture-password');await page.locator('#loginButton').click();await page.locator('#navSettings').click();
+  await page.locator('#username').fill('platform-qa');await page.locator('#password').fill('fixture-password');await page.locator('#loginButton').click({noWaitAfter:true});await page.locator('#navSettings').click();
   assert.equal(await page.locator('[data-platform-account]').count(),4);
   await page.locator('[data-platform-account=wsy] .edit-platform-account').click();await page.locator('#platformAccountUsername').fill('fixture-user');await page.locator('#platformAccountPassword').fill('fixture-supplier-password');await page.locator('#savePlatformAccount').click();
   await page.locator('#platformAccountDialog').waitFor({state:'hidden'});assert.match(await page.locator('[data-platform-account=wsy]').innerText(),/密码已加密保存/);

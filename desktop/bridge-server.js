@@ -3,10 +3,12 @@ const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const review = require('../review');
+const sales = require('../taobao-sales');
 
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_CANDIDATES = 500;
 const dataImage = value => typeof value === 'string' && value.length <= 6 * 1024 * 1024 && /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/i.test(value);
+const safeTaobaoRecovery=value=>value?.kind==='taobao_verification'?{kind:'taobao_verification',opened:value.opened===true,page:['verification','image_search'].includes(value.page)?value.page:'unavailable'}:null;
 
 function safeItem(item) {
   if (!item || typeof item !== 'object' || Array.isArray(item)) item = {};
@@ -20,6 +22,7 @@ function safeItem(item) {
   };
   return {
     platform: /^e3hui-(?:cn|com)$/.test(item.platform) ? 'e3hui' : String(item.platform || '').slice(0, 40), id: String(item.id || '').slice(0, 200),
+    ...(item.platform==='taobao'?sales.fields(item):{}),
     goodsId: String(item.goodsId || '').slice(0, 200), title: String(item.title || '').slice(0, 1000),
     price: item.price != null && item.price !== '' && Number.isFinite(Number(item.price)) ? Number(item.price) : null,
     saving: item.saving != null && item.saving !== '' && Number.isFinite(Number(item.saving)) ? Number(item.saving) : null,
@@ -166,7 +169,7 @@ function createDesktopBridge({ port = 43821, host = '127.0.0.1', dataDir, token:
     const existing = [...browserCommands.values()].find(entry => {
       if (!['queued', 'claimed'].includes(entry.status) || entry.kind !== command.kind) return false;
       return command.kind === 'douyin-search' ? entry.sourceUrl === command.sourceUrl
-        : command.kind === 'product-search' || command.kind === 'taobao-image-search' ? entry.buyerTaskId === command.buyerTaskId
+        : command.kind === 'product-search' || command.kind === 'taobao-image-search' || command.kind === 'taobao-verification' ? entry.buyerTaskId === command.buyerTaskId
         : command.kind === 'product-details' ? entry.jobId === command.jobId && entry.itemIndex === command.itemIndex
         : ['buyer-source','buyer-supplier-search'].includes(command.kind)?entry.buyerTaskId===command.buyerTaskId&&entry.slot===command.slot:false;
     });
@@ -438,7 +441,7 @@ function createDesktopBridge({ port = 43821, host = '127.0.0.1', dataDir, token:
           resaleFloor: Number.isFinite(Number(result.resaleFloor)) && Number(result.resaleFloor) > 0 ? Number(result.resaleFloor) : null,
           colors: (Array.isArray(result.colors) ? result.colors : []).slice(0, 80).map(value => String(value).slice(0, 100)),
           sizes: (Array.isArray(result.sizes) ? result.sizes : []).slice(0, 80).map(value => String(value).slice(0, 100)),
-          sku: String(result.sku || '').slice(0, 200), shopName: String(result.shopName || '').slice(0, 300),
+          sku: String(result.sku || '').slice(0, 200), shopName: String(result.shopName || '').slice(0, 300), boothName: String(result.boothName || '').slice(0, 300), address: String(result.address || '').slice(0, 200),
           description: String(result.description || '').slice(0, 6000), attributes: Array.isArray(result.attributes) ? result.attributes.slice(0, 80).map(value => String(value).slice(0, 300)) : [],
           images, imageGroups, quality, visibleText: String(result.visibleText || '').slice(0, 24000), detailUrl: item.detailUrl };
         job.updatedAt = new Date().toISOString(); await save();
@@ -454,16 +457,19 @@ function createDesktopBridge({ port = 43821, host = '127.0.0.1', dataDir, token:
           const detail=safeItem({ ...value, platform:'taobao' });
           let detailUrl='';try{const target=new URL(detail.detailUrl);if(target.protocol==='https:'&&['item.taobao.com','detail.tmall.com'].includes(target.hostname)&&target.pathname==='/item.htm'&&/^\d{5,25}$/.test(target.searchParams.get('id')||''))detailUrl=`https://${target.hostname}/item.htm?id=${target.searchParams.get('id')}`;}catch{}
           if(!detailUrl||!detail.imageUrl)return null;
-          return { ...detail, id:String(value.id||detail.goodsId||new URL(detailUrl).searchParams.get('id')).slice(0,120), platform:'taobao', detailUrl, salesText:String(value.salesText||'').slice(0,200), location:String(value.location||'').slice(0,120) };
+          return { ...detail, id:String(value.id||detail.goodsId||new URL(detailUrl).searchParams.get('id')).slice(0,120), platform:'taobao', detailUrl, location:String(value.location||'').slice(0,120) };
         }).filter(Boolean);
         if(!candidates.length)return send(response,400,{ok:false,error:'invalid_candidates：淘宝没有返回有效商品链接和图片'});
         await onTaobaoSearchResults(command.buyerTaskId,candidates,command.id);
         command.resultCount=candidates.length;
       }
       if(command.kind==='taobao-image-search'&&input.status==='failed') {
-        await onTaobaoSearchFailed(command.buyerTaskId,input.error);
+        const recovery=safeTaobaoRecovery(input.recovery);
+        if(recovery)command.recovery=recovery;
+        await onTaobaoSearchFailed(command.buyerTaskId,input.error,recovery,command.id);
         taobaoPaused=true;
       }
+      if(command.kind==='taobao-verification'&&input.status==='accepted')command.recovery=safeTaobaoRecovery(input.recovery);
       command.status = input.status; command.updatedAt = new Date().toISOString(); command.error = input.status === 'failed' ? String(input.error || '浏览器处理失败').slice(0, 180) : '';
       if (input.status === 'accepted' || input.status === 'failed') delete command.imageData;
       if (input.status === 'accepted') command.resultAvailable = command.kind === 'product-details' || command.kind === 'taobao-image-search';
@@ -511,6 +517,10 @@ function createDesktopBridge({ port = 43821, host = '127.0.0.1', dataDir, token:
 
   return {
     token, snapshot, resume, deleteJobs, enqueueTaobaoSearch,
+    async enqueueTaobaoVerification(taskId){
+      if(!/^[\da-f-]{36}$/i.test(taskId||''))throw new Error('淘宝验证任务无效');
+      return enqueueBrowserCommand({kind:'taobao-verification',buyerTaskId:taskId});
+    },
     async cancelBuyerTaskCommands(taskId){
       const changed=[];
       for(const command of browserCommands.values())if(command.buyerTaskId===taskId&&['queued','claimed'].includes(command.status)){
@@ -533,7 +543,8 @@ function createDesktopBridge({ port = 43821, host = '127.0.0.1', dataDir, token:
         return enqueueBrowserCommand({kind:input.kind,buyerTaskId:input.buyerTaskId,slot:input.slot,platform:input.platform,detailUrl:url.href});
       }
       if(!dataImage(input.imageData))throw new Error('自动买手搜索图片无效');
-      return enqueueBrowserCommand({kind:input.kind,buyerTaskId:input.buyerTaskId,slot:'search',imageData:input.imageData});
+      const searchMode=input.searchMode==='detail'?'detail':'top';
+      return enqueueBrowserCommand({kind:input.kind,buyerTaskId:input.buyerTaskId,slot:'search',searchMode,imageData:input.imageData});
     },
     async resumeTaobaoSearch() { if(closed||!canAccess())throw new Error('请先登录桌面工作台');taobaoPaused=false;await saveBrowserCommands();return snapshot(); },
     async pauseTaobaoSearch() { if(closed||!canAccess())throw new Error('请先登录桌面工作台');taobaoPaused=true;await saveBrowserCommands();return snapshot(); },
@@ -565,17 +576,18 @@ function createDesktopBridge({ port = 43821, host = '127.0.0.1', dataDir, token:
       const existing=[...jobs.values()].find(job=>job.buyerTaskId===input.buyerTaskId&&job.queryId===input.queryId);
       if(existing)return publicJob(existing);
       if(!Array.isArray(input.items)||input.items.length<1||input.items.length>(input.kind==='supplier'?500:60))throw new Error('候选数量超出本次识别范围');
-      const items=input.items.map(value=>{
+      let items=input.items.map(value=>{
         const item=safeItem({...value,platform:input.kind==='supplier'?value.platform:'taobao'});let product='';
         try{const url=new URL(item.detailUrl);if(input.kind==='supplier'){const domains={wsy:['wsy.com'],zwd:['17zwd.com'],qcc:['17qcc.com'],e3hui:['e3hui.com','e3hui.cn']}[item.platform]||[];if(url.protocol==='https:'&&!url.username&&!url.password&&!url.port&&domains.some(domain=>url.hostname===domain||url.hostname.endsWith('.'+domain)))product=url.href;}else if(url.protocol==='https:'&&['item.taobao.com','detail.tmall.com'].includes(url.hostname)&&url.pathname==='/item.htm'&&/^\d{5,25}$/.test(url.searchParams.get('id')||''))product=`https://${url.hostname}/item.htm?id=${url.searchParams.get('id')}`;}catch{}
         if(!product||!item.imageUrl||(input.kind!=='supplier'&&!allowedProductImage(new URL(item.imageUrl).hostname,'taobao')))throw new Error('淘宝或供应商候选商品链接或图片地址无效');
         return {...item,detailUrl:product};
       });
+      if(input.kind!=='supplier')items=sales.sort(items);
       if([...jobs.values()].filter(job=>['queued','processing'].includes(job.status)).length+pendingAdmissions>=maxStoredJobs)throw new Error('桌面队列已有10个进行中任务，请等待完成后继续');
       pendingAdmissions++;
       try {
         const id=crypto.randomUUID(),now=new Date().toISOString(),queryId=input.queryId;
-        const job={id,createdAt:now,updatedAt:now,status:'queued',progress:0,completed:0,total:items.length,error:'',query:input.query,mode:'select',reviewMode:input.automatic===true?'direct':'manual',goodsId:'',baseline:'',reduction:'',queryName:String(input.queryName||'淘宝同款候选').slice(0,120),buyerTaskId:input.buyerTaskId,queryId,searchGroupId:queryId,searchIssues:safeSearchIssues(input.searchIssues),platformSearches:safePlatformSearches(input.platformSearches),autoRetryCount:0,manualRetryRounds:0,retryCount:0,items};
+        const job={id,createdAt:now,updatedAt:now,status:'queued',progress:0,completed:0,total:items.length,error:'',query:input.query,mode:'select',reviewMode:input.automatic===true&&input.kind==='supplier'?'direct':'manual',goodsId:'',baseline:'',reduction:'',queryName:String(input.queryName||'淘宝同款候选').slice(0,120),buyerTaskId:input.buyerTaskId,queryId,searchGroupId:queryId,searchIssues:safeSearchIssues(input.searchIssues),platformSearches:safePlatformSearches(input.platformSearches),autoRetryCount:0,manualRetryRounds:0,retryCount:0,items};
         await fs.mkdir(path.join(dataDir,'queries'),{recursive:true});await fs.writeFile(path.join(dataDir,'queries',`${id}.txt`),job.query,{encoding:'utf8',flag:'wx'});
         jobs.set(id,job);try{await trimJobs(id);await save();}catch(error){jobs.delete(id);await fs.rm(path.join(dataDir,'queries',`${id}.txt`),{force:true});throw error;}
         resume();return publicJob(job);
@@ -716,7 +728,7 @@ function createDesktopBridge({ port = 43821, host = '127.0.0.1', dataDir, token:
       try {
         const savedCommands = JSON.parse(await fs.readFile(path.join(dataDir, 'browser-commands.json'), 'utf8'));
         if (Array.isArray(savedCommands)) for (const command of savedCommands.slice(-60)) {
-          if (command && /^[\da-f-]{36}$/i.test(command.id || '') && ['douyin-search', 'product-search', 'taobao-image-search', 'product-details','buyer-source','buyer-supplier-search'].includes(command.kind) && ['queued', 'claimed', 'accepted', 'failed'].includes(command.status)) browserCommands.set(command.id, command);
+          if (command && /^[\da-f-]{36}$/i.test(command.id || '') && ['douyin-search', 'product-search', 'taobao-image-search', 'taobao-verification', 'product-details','buyer-source','buyer-supplier-search'].includes(command.kind) && ['queued', 'claimed', 'accepted', 'failed'].includes(command.status)) browserCommands.set(command.id, command);
         }
       } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
       try {

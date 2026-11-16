@@ -27,7 +27,7 @@ test('打包买手例外：对照原图和候选图、按平台登录入口重�
   await page.locator('#username').fill('visual-review-qa');await page.locator('#password').fill('fixture');await page.locator('#loginButton').click();await page.locator('#appShell').waitFor({state:'visible'});
   const model=await page.evaluate(async()=>window.desktop.saveModel({name:'图片核对模型',model:'vision-fixture',endpoint:'https://vision.fixture/v1',apiKey:'fixture'}));await page.evaluate(id=>window.desktop.selectModel(id),model.models.find(item=>item.name==='图片核对模型').id);
   await page.evaluate(()=>window.desktop.saveBuyerSettings({erpBaseUrl:'https://erp.fixture/api',erpTenantId:'1',erpClientId:'fixture',erpClientSecret:'fixture-secret',erpUsername:'fixture-user',erpPassword:'fixture-password',target:'draft'}));
-  await page.locator('#navBuyer').click();const added=await page.evaluate(()=>window.desktop.addBuyerLink('商品分享 https://v.douyin.com/herTF0zw-Ac/ 点击打开'));await page.evaluate(id=>window.desktop.startBuyerAuto([id]),added.taskId);
+  await page.locator('#navBuyer').click();const added=await page.evaluate(()=>window.desktop.addBuyerLink('商品分享 https://v.douyin.com/herTF0zw-Ac/ 点击打开'));await page.evaluate(id=>window.desktop.startBuyerAuto([id]),added.taskId);await page.locator('[data-buyer-tab=progress]').click();
   let state,command;
   for(let i=0;i<100;i++){state=await page.evaluate(()=>window.desktop.snapshot());command=state.browserCommands.find(row=>row.buyerTaskId===added.taskId&&row.kind==='buyer-source'&&row.status==='queued');if(command)break;await page.waitForTimeout(50);}
   assert.ok(command,'自动队列应打开来源页');

@@ -13,7 +13,7 @@ const { BuyerWorkflow, imageData: buyerImageData } = require('./buyer-workflow')
 const {resolveOnlineTask}=require('./online-task-binding');
 const {parseBuyerTable,publicImport,sourceLink,exportBuyerXlsx}=require('./buyer-import');
 const {BuyerSettings}=require('./buyer-settings');
-const {BuyerEngine}=require('./buyer-engine');
+const {BuyerEngine,confirmedSupplierArticleNo}=require('./buyer-engine');
 const {createBuyerProviders}=require('./buyer-providers');
 const { buildBuyerSource } = require('./buyer-source');
 const { downloadCandidate, downloadImagePreview, validateQuery } = require('./images');
@@ -23,7 +23,7 @@ const { Extension } = require('./extension');
 const { DouyinDownloads, createBrowserParser } = require('./douyin');
 const review = require('../review');
 const { syncBuyerFolder } = require('./buyer-files');
-const { buyerTaskComparisonPreview, queueBuyerCandidateGallery, candidateGallery } = require('./buyer-preview');
+const { supplierImagePreviews, buyerTaskComparisonPreview, queueBuyerCandidateGallery, candidateGallery } = require('./buyer-preview');
 
 // Honor Electron's standard profile switch before restoring any account or job.
 const userDataDir = app.commandLine.getSwitchValue('user-data-dir');
@@ -65,7 +65,8 @@ async function syncTaskToOnlineTable(task) {
   if (!task?.onlineTableRowId) return;
   try {
     const {client}=await resolveOnlineTask({task,settings:buyerSettings,authToken:accounts.session.token,workflow:buyerWorkflow});
-    const result = await client.updateTask(task.onlineTableRowId, task.id, { automationState: task.automation?.state || '', automationStep: task.automation?.step || '', automationError: task.automation?.error || (task.automation?.state==='waiting'?task.automation.waitingReason||'':''), erpProductNo: task.automation?.result?.productNo || '' }, task.onlineTableRowVersion || 1);
+    const code=confirmedSupplierArticleNo(task);
+    const result = await client.updateTask(task.onlineTableRowId, task.id, { automationState: task.automation?.state || '', automationStep: task.automation?.step || '', automationError: task.automation?.error || (task.automation?.state==='waiting'?task.automation.waitingReason||'':''), erpProductNo: task.automation?.result?.productNo || '',...(code?{supplierArticleNo:code}:{}) }, task.onlineTableRowVersion || 1);
     const updated = result.row || result;
     task.onlineTableRowVersion = updated.version;
     await buyerWorkflow.patchTask(task.id, { onlineTableRowVersion: updated.version });
@@ -143,7 +144,7 @@ async function activateProfile() {
     getVisionStatus: visionStatus, getPlatformCredential: platform => platformAccounts.credential(platform),
     onProductSearchAccepted: (taskId, queryId) => buyerWorkflow.linkSearch(taskId, queryId),
     onTaobaoSearchResults: (taskId, candidates, commandId) => buyerWorkflow.saveTaobaoSearch(taskId,candidates,commandId),
-    onTaobaoSearchFailed: (taskId, error) => buyerWorkflow.failTaobaoSearch(taskId,error),
+    onTaobaoSearchFailed: (taskId, error, recovery,commandId) => buyerWorkflow.failTaobaoSearch(taskId,error,recovery,commandId),
     onBuyerBrowserResult:(command,result,error)=>buyerProviders.onBrowserResult(command,result,error),processJob: compareJob });
   await bridge.start();
   accessAllowed = true;
@@ -170,11 +171,17 @@ async function deactivate(message = '') {
 function snapshot() {
   const loggedIn = authenticated() && !!bridge;
   const version = app.isPackaged ? displayVersion(app.getVersion()) : require('../manifest.json').version_name;
+  const bridgeState=loggedIn?bridge.snapshot():{port:null,token:'',vision:{configured:false},jobs:[]};
+  for(const job of bridgeState.jobs){
+    const original=job.buyerTaskId?buyerWorkflow.task(job.buyerTaskId)?.marketplaceCandidates:[];
+    job.items=job.items.map(item=>{if(item.platform!=='taobao'||item.salesText)return item;const source=original?.find(row=>row.detailUrl===item.detailUrl);return source?{...item,...require('../taobao-sales').fields(source)}:item;});
+  }
+
   return { version, authenticated: loggedIn, user: loggedIn ? accounts.session.user : null, error: startupError,
     updates: updates?.snapshot(),
     extension: extension?.snapshot(),
     douyin: loggedIn ? douyin?.snapshot() : null,
-    ...(loggedIn ? bridge.snapshot() : { port: null, token: '', vision: { configured: false }, jobs: [] }),
+    ...bridgeState,
     catalog: loggedIn ? models.list() : { activeId: '', models: [] },
     platformAccounts: loggedIn ? platformAccounts.list() : [], buyerTasks: loggedIn ? buyerWorkflow.snapshot() : [],buyerAutomation:loggedIn?buyerEngine?.snapshot():null,buyerSettings:loggedIn?buyerSettings?.snapshot():null,onlineTable:loggedIn&&onlineTableSync?{table:onlineTableSync.snapshot,serviceAvailable:true}:null };
 }
@@ -256,6 +263,7 @@ handle('buyer-settings-import',async()=>{
   if(!input.erpBaseUrl||!input.erpUsername||!input.erpPassword||!input.erpClientSecret)throw new Error('原配置未包含完整互拓连接信息');return buyerSettings.save(input);
 });
 handle('buyer-erp-test',async()=>{const result=await buyerSettings.catalogs(profileController.signal);const companies=[...new Set(result.dictionaries.filter(row=>row.dictType==='company'&&row.label).map(row=>row.label))];return{ok:true,categories:result.categories.length,dictionaries:result.dictionaries.length,companies};});
+handle('buyer-web-table',()=>shell.openExternal('https://wsfile.cn/maishou/table/'));
 handle('online-table-list',async()=>{const selected=await refreshOnlineTable();return{tables:onlineTableSync?.tables||[],selectedId:selected?.id||''};});
 handle('online-table-create',async name=>{if(!accounts.session.user.isAdmin)throw Object.assign(new Error('只有 TDL 管理员可以创建在线选品表'),{status:403});const client=await buyerSettings.onlineTableClient(accounts.session.token);const result=await client.create(name);await buyerSettings.save({onlineTableId:result.table.id});await refreshOnlineTable();return{table:result.table};});
 handle('online-table-health',async()=>{const client=await buyerSettings.onlineTableClient(accounts.session.token);return client.health();});
@@ -306,8 +314,8 @@ handle('online-table-rollback',async historyId=>{
   const result=await client.rollback(historyId,plan.revision);await refreshOnlineTable();return result;
 });
 handle('buyer-erp-refresh',async()=>{if(!authenticated())throw new Error('请先登录 TDL 账号');const result=await buyerSettings.syncManaged(accounts.session.token);buyerSettings.client=null;buyerSettings.catalogCache=null;if(!result.configured)await buyerEngine.pause();return result;});
-handle('buyer-auto-start',ids=>{if(!models?.config())throw new Error('请先添加并选择视觉模型');if(!buyerSettings.configured())throw new Error(buyerSettings.managedError||'请先填写当前买手的互拓账号配置');return buyerEngine.start(ids);});
-handle('buyer-task-comparison-preview',async(id,indexes)=>{const task=buyerWorkflow.task(id);if(!task)throw new Error('买手任务不存在');return buyerTaskComparisonPreview({workflow:buyerWorkflow,bridge,task,indexes,downloadCandidate,downloadImagePreview});});
+handle('buyer-auto-start',(ids,options)=>{if(!models?.config())throw new Error('请先添加并选择视觉模型');if(!buyerSettings.configured())throw new Error(buyerSettings.managedError||'请先填写当前买手的互拓账号配置');return buyerEngine.start(ids,options);});
+handle('buyer-task-comparison-preview',async(id,indexes,kind)=>{const task=buyerWorkflow.task(id);if(!task)throw new Error('买手任务不存在');return buyerTaskComparisonPreview({workflow:buyerWorkflow,bridge,task,indexes,downloadCandidate,downloadImagePreview,kind});});
 handle('buyer-load-supplier-gallery',async(id,index,retry)=>{const task=buyerWorkflow.task(id);if(!task)throw new Error('买手任务不存在');return queueBuyerCandidateGallery({workflow:buyerWorkflow,bridge,task,index,retry:retry===true});});
 handle('buyer-supplier-gallery-status',(id,index)=>{const task=buyerWorkflow.task(id),candidate=task?.automation?.searchCandidates?.[index];if(!candidate)throw new Error('供应商候选不存在');const gallery=candidateGallery(task,index,candidate,bridge);return{state:gallery.state,error:gallery.error||'',total:gallery.total};});
 handle('buyer-cancel-supplier-gallery',(id,index)=>{const task=buyerWorkflow.task(id),candidate=task?.automation?.searchCandidates?.[index];if(!candidate)throw new Error('供应商候选不存在');const gallery=candidateGallery(task,index,candidate,bridge),commandId=task.automation.checkpoints?.[gallery.slot]?.commandId;if(gallery.state==='waiting'&&commandId)return bridge.failBuyerBrowserCommand(commandId,'等待浏览器读取商品图集超时，已取消该请求');return false;});
@@ -315,6 +323,12 @@ handle('buyer-open-platform',async platform=>{const urls={wsy:'https://www.wsy.c
 handle('buyer-auto-pause',()=>buyerEngine.pause());
 handle('buyer-auto-resume',()=>buyerEngine.resume());
 handle('buyer-auto-retry',id=>buyerEngine.retry(id));
+handle('buyer-collection-query',id=>buyerEngine.queryCollection(id));
+const buyerDraftConvertAllowed=()=>buyerSettings.value.erpManaged?buyerSettings.value.erpDraftConvertConfirmed===true:buyerSettings.configured();
+handle('buyer-draft-list',async options=>{if(!authenticated())throw new Error('请先登录 TDL 账号');const result=await buyerProviders.draftList(options||{});return{...result,canConvertDrafts:buyerDraftConvertAllowed(),list:result.list.map(row=>({id:row.id,draftVersion:row.draftVersion,draftState:row.draftState,articleNo:row.articleNo,productName:row.productName,productTypeName:row.productTypeName,supplierName:row.supplierName,storeHouse:row.storeHouse,talkCost:row.talkCost,platformPrice:row.platformPrice,createTime:row.createTime,mainImage:row.mainImage}))};});
+handle('buyer-draft-detail',async id=>{if(!authenticated())throw new Error('请先登录 TDL 账号');return{...await buyerProviders.draftDetail(String(id||'')),canConvertDrafts:buyerDraftConvertAllowed()};});
+handle('buyer-draft-delete',async id=>{if(!authenticated())throw new Error('请先登录 TDL 账号');const draftId=String(id||'');const answer=await dialog.showMessageBox(windowRef,{type:'warning',buttons:['取消','删除草稿'],defaultId:0,cancelId:0,message:'删除这份互拓草稿？',detail:'删除后 ERP 草稿资料、图片关联和版本记录将不再出现在草稿箱；已转入待审核的产品不受影响。此操作不可恢复。'});if(answer.response!==1)return{canceled:true};return buyerProviders.deleteDraftEntry(draftId);});
+handle('buyer-draft-convert',async(id,revision)=>{if(!authenticated())throw new Error('请先登录 TDL 账号');if(!buyerDraftConvertAllowed())throw new Error('当前互拓账号未开通“草稿转待审核”权限，请联系管理员开通后再操作');const owner=accounts.session.user.id,engine=buyerEngine,draftId=String(id||'');if(!/^\d+$/.test(draftId)||!Number.isInteger(revision)||revision<1)throw new Error('请重新打开草稿详情确认有效版本后再转换');const answer=await dialog.showMessageBox(windowRef,{type:'question',buttons:['取消','转入待审核'],defaultId:0,cancelId:0,message:'将这份草稿转入互拓待审核？',detail:'确认后互拓会生成待审核产品。最终上架仍需要你到互拓“待审核产品”中检查并点击“转化上架”。'});if(answer.response!==1)return{canceled:true};if(!authenticated()||accounts.session.user.id!==owner||buyerEngine!==engine)throw new Error('账号已切换，请重新打开草稿箱');return engine.convertDraftForReview(draftId,revision);});
 handle('buyer-auto-supplier',(id,index,options)=>buyerEngine.resolveSupplier(id,index,options));
 handle('buyer-auto-supplier-reject',(id,index)=>buyerEngine.rejectSupplierCandidate(id,index));
 handle('buyer-auto-supplier-restore',(id,index)=>buyerEngine.restoreSupplierCandidate(id,index));
@@ -322,9 +336,12 @@ handle('buyer-auto-facts',async(id,input)=>{
   const task=buyerWorkflow.task(id);if(!task?.automation||task.automation.state!=='attention'||!task.automation.supplierDetails)throw new Error('当前任务不处于可补充供货资料状态');
   const {manualSupplierFacts}=require('./buyer-evidence');const facts=manualSupplierFacts(input,task.automation.facts,task.automation.supplierDetails);
   if(facts.missing.length){await buyerWorkflow.patchAutomation(id,{facts,missing:facts.missing,error:facts.missing.join('；')},'已保存人工补充供货资料，仍有特殊类别证明待补');return{continued:false};}
-  await buyerWorkflow.patchTask(id,{articleNo:facts.articleNo});await buyerWorkflow.patchAutomation(id,{facts,step:'marketplace',state:'queued',enabled:true,tags:[],error:'',missing:[]},'例外供货资料已补齐，继续自动流程');await buyerEngine.resume();return{continued:true};
+  if(task.automation.productSubmission||task.automation.draftId)throw new Error('商品已有互拓提交记录，请先核对原回执，不能修改后再次新增');
+  const completed=require('./buyer-engine').hasCompletedCollection(task,facts);
+  await buyerWorkflow.patchTask(id,{articleNo:facts.articleNo});await buyerWorkflow.patchAutomation(id,{facts,step:completed?'mapping':'marketplace',state:'queued',enabled:true,tags:[],error:'',missing:[],inFlight:null},completed?'供货资料已修正，保留已完成采集并继续整理互拓资料':'例外供货资料已补齐，继续自动流程');await buyerEngine.resume();return{continued:true};
 });
-handle('buyer-task-detail',id=>{const task=buyerWorkflow.task(id);if(!task)throw new Error('买手任务不存在');const {imageFile,...safe}=structuredClone(task);return safe;});
+handle('buyer-supplier-images-preview',(id,indexes,full=false)=>{const task=buyerWorkflow.task(id);if(!task)throw new Error('买手任务不存在');return supplierImagePreviews({task,indexes,full:full===true,downloadImagePreview:url=>downloadImagePreview(url,profileController.signal),downloadFull:url=>downloadCandidate(url,profileController.signal)});});
+handle('buyer-task-detail',id=>{const task=buyerWorkflow.task(id);if(!task)throw new Error('买手任务不存在');const {imageFile,...safe}=structuredClone(task);if(safe.automation?.supplierDetails)safe.automation.materialInfo=require('./buyer-evidence').supplierMaterialInfo(safe.automation.supplierDetails);return safe;});
 handle('buyer-task-locate',async id=>{const task=buyerWorkflow.task(id);if(!task?.onlineTableRowId)throw new Error('该任务没有在线表格关联');const binding=await resolveOnlineTask({task,settings:buyerSettings,authToken:accounts.session.token,workflow:buyerWorkflow});await buyerSettings.save({onlineTableId:binding.tableId});await refreshOnlineTable();return{rowId:binding.row.id,offset:binding.offset};});
 handle('buyer-task-delete',async id=>{
   const task=buyerWorkflow.assertDeletable(id);
@@ -400,6 +417,7 @@ handle('buyer-taobao-search', async taskId => {
   await buyerWorkflow.queueTaobaoSearch(taskId,command.id);return command;
 });
 handle('buyer-taobao-resume', () => bridge.resumeTaobaoSearch());
+handle('buyer-taobao-verification', taskId => {if(!buyerWorkflow.task(taskId))throw new Error('买手任务不存在');return bridge.enqueueTaobaoVerification(taskId);});
 handle('buyer-taobao-pause', () => bridge.pauseTaobaoSearch());
 handle('buyer-taobao-compare', async taskId => {
   const task=buyerWorkflow.task(taskId);if(!task)throw new Error('买手任务不存在');
@@ -411,14 +429,24 @@ handle('buyer-taobao-compare', async taskId => {
   const job=await bridge.enqueueTaobaoComparison({buyerTaskId:taskId,queryId:task.marketplaceQueryId,query,queryName:(task.sourceTitle||task.articleNo||'买手商品')+' · 淘宝同款',items:task.marketplaceCandidates});
   await buyerWorkflow.setMarketplaceJob(taskId,job.id,'scoring');return job;
 });
-handle('buyer-taobao-confirm', async (taskId,jobId,index) => {
+async function confirmTaobaoCandidate(taskId,jobId,index,input,signature) {
   const task=buyerWorkflow.task(taskId),job=bridge.snapshot().jobs.find(entry=>entry.id===jobId),item=job?.items[index];
-  if(!task||!job||job.buyerTaskId!==taskId||task.marketplaceSearch?.jobId!==jobId||item?.platform!=='taobao')throw new Error('淘宝候选不属于该买手任务');
-  if(review.decision(item)?.verdict!=='likely_same')throw new Error('请先核对模型分数并人工确认该候选为同款');
-  const source=task.marketplaceCandidates?.find(entry=>new URL(entry.detailUrl).searchParams.get('id')===new URL(item.detailUrl).searchParams.get('id'));
+  if(!task||!job||job.buyerTaskId!==taskId||![task.marketplaceSearch?.jobId,task.automation?.checkpoints?.marketplaceComparison?.jobId].includes(jobId)||item?.platform!=='taobao')throw new Error('淘宝候选不属于该买手任务');
+  const source=task.marketplaceCandidates?.find(entry=>new URL(entry.detailUrl).hostname===new URL(item.detailUrl).hostname&&new URL(entry.detailUrl).searchParams.get('id')===new URL(item.detailUrl).searchParams.get('id')&&entry.imageUrl===item.imageUrl);
   if(!source)throw new Error('原始淘宝搜索证据已变化，请重新核对');
-  return buyerWorkflow.setMarketplaceLink(taskId,{url:item.detailUrl,title:item.title,salesText:source.salesText,confirmedSame:true,jobId,candidateIndex:index});
-});
+  if(task.automation&&task.automation.step!=='marketplace'&&task.marketplaceCandidate?.jobId===jobId&&task.marketplaceCandidate?.candidateIndex===index&&task.marketplaceCandidate?.confirmedSame&&review.decision(item)?.verdict==='likely_same')return{continued:true,alreadyContinued:true,step:task.automation.step};
+  if(task.automation&&(task.automation.step!=='marketplace'||task.automation.state!=='attention'||buyerEngine.busy.has(taskId)))throw new Error('该商品当前不在淘宝人工确认阶段，请等待当前步骤完成后重新打开任务核对');
+  if(input!==undefined){
+    if(input?.verdict!=='likely_same')throw new Error('请选择确认同款后再继续');
+    await bridge.reviewItem(jobId,index,input,signature);
+  }else if(review.decision(item)?.verdict!=='likely_same')throw new Error('请先看图并人工确认该候选为同款');
+  let result;
+  try{result=await buyerWorkflow.setMarketplaceLink(taskId,{url:item.detailUrl,title:item.title,salesText:source.salesText,confirmedSame:true,jobId,candidateIndex:index},{continueAutomation:!!task.automation});}
+  catch(error){throw new Error(`人工同款结论已保存，但套图来源尚未继续关联：${error.message||error}。可重新打开本候选点击确认并继续。`);}
+  if(task.automation)try{await buyerEngine.resume();}catch(error){throw new Error(`淘宝套图来源已关联，任务已进入互拓采集队列，但队列未能继续：${error.message||error}。请点击“继续队列”。`);}
+  return{...result,continued:!!task.automation,step:task.automation?.step||'',alreadyContinued:false};
+}
+handle('buyer-taobao-confirm',confirmTaobaoCandidate);
 handle('buyer-assemble-source', async (taskId, jobId, candidateIndex) => {
   const task=buyerWorkflow.task(taskId); if(!task?.queryId) throw new Error('请先完成四平台搜货');
   const candidate=bridge.buyerCandidate(jobId,Number(candidateIndex));

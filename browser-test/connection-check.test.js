@@ -38,7 +38,7 @@ test('连接检查只读采集真实扩展页面；不读Cookie、不调用接�
     const page=await context.newPage(); await page.goto(worker.url().replace('background.js','workbench.html'));
     await page.waitForFunction(()=>!document.getElementById('pick').disabled);
     assert.equal(await page.locator('#connectionDetails').isVisible(),true);
-    assert.equal(await page.locator('.connection-row[data-code="not_checked"]').count(),4,'未检查时也应显示四个平台');
+    assert.equal(await page.locator('.connection-row[data-code="not_checked"]').count(),5,'未检查时显示四个平台和淘宝连接');
     assert.equal(await page.locator('#connectionCheckedAt').isVisible(),false);
     assert.equal(await page.locator('#connectionOutput pre').count(),0);
     const statusBefore=await page.locator('#status').textContent();
@@ -50,8 +50,8 @@ test('连接检查只读采集真实扩展页面；不读Cookie、不调用接�
     await page.waitForFunction(()=>document.getElementById('connectionStatus').textContent.includes('检查完成'));
     assert.equal(await page.locator('#reset').isDisabled(),false);
     const text=await page.locator('#connectionOutput').textContent();
-    assert.equal(await page.locator('.connection-row').count(),4);
-    assert.match(text,/网商园未打开/);assert.match(text,/17网页面已响应/);
+    assert.equal(await page.locator('.connection-row').count(),5);
+    assert.match(text,/网商园未打开/);assert.match(text,/17网页面已响应/);assert.match(text,/淘宝未打开/);
     assert.match(text,/青创网需要登录/);assert.match(text,/衣衫汇无搜图权限/);
     assert.equal(await page.locator('[data-connection-platform="qcc"]').textContent(),'前往登录');
     assert.equal(await page.locator('[data-connection-platform="e3hui"]').textContent(),'查看权限');
@@ -59,7 +59,7 @@ test('连接检查只读采集真实扩展页面；不读Cookie、不调用接�
     assert.equal(await page.locator('#connectionOutput').getAttribute('aria-busy'),'false');
     assert.match(await page.locator('#connectionCheckedAt').textContent(),/检查于/);
     assert.equal(text.includes('"checkedAt"'),false);assert.equal(text.includes('never-read-this'),false);
-    assert.match(await page.locator('#connectionStatus').textContent(),/1 个平台页面已响应，3 个需处理/);
+    assert.match(await page.locator('#connectionStatus').textContent(),/1 个平台页面已响应，4 个需处理/);
     const downloadEvent=page.waitForEvent('download');await page.locator('#downloadConnection').click();const download=await downloadEvent;
     assert.equal(download.suggestedFilename(),'找商品-平台连接诊断.json');
     const output=JSON.parse(fs.readFileSync(await download.path(),'utf8'));assert.equal(output.mode,'workbench_diagnostic_snapshot');assert.equal(output.connectionCheck.mode,'read_only_existing_tabs');

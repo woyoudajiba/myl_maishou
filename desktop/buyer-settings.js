@@ -9,17 +9,17 @@ class BuyerSettings{
   configured(){const c=this.value;if(this.requireManaged)return!!(c.erpManaged&&c.erpBaseUrl&&c.erpToken);if(c.erpManaged)return!!(c.erpBaseUrl&&c.erpToken);return!!(c.erpBaseUrl&&(c.erpTenantId||c.erpTenantName)&&c.erpClientId&&c.erpClientSecret&&c.erpUsername&&c.erpPassword);}
   snapshot(){const {erpClientSecret,erpPassword,erpToken,...safe}=this.value;if(this.requireManaged)return{target:safe.target,pallet:safe.pallet,supplyCycle:safe.supplyCycle,productRootDir:safe.productRootDir,buyerName:this.value.erpManaged?this.value.buyerName:'',configured:this.configured(),managed:true,managedUsername:this.value.erpManaged?this.value.erpUsername:'',managedError:this.managedError,onlineTableBaseUrl:DEFAULT_TABLE_SERVICE_URL,onlineTableConfigured:!!this.value.onlineTableId};return{...safe,configured:this.configured(),managed:!!this.value.erpManaged,managedUsername:this.value.erpUsername||'',managedError:this.managedError,hasClientSecret:!!erpClientSecret,hasPassword:!!erpPassword,onlineTableBaseUrl:DEFAULT_TABLE_SERVICE_URL,onlineTableConfigured:!!this.value.onlineTableId};}
   async syncManaged(authToken=''){
-    this.managedError='';
+    this.managedError='';this.client=null;
     // A buyer supplied connection is authoritative for this Windows profile.
     // The server mapping remains a fallback for accounts that have not entered credentials.
     if(!this.requireManaged&&!this.value.erpManaged&&this.configured())return this.snapshot();
     this.value.erpManaged=false; this.value.erpToken='';
-    if(!authToken)return this.snapshot();
+    if(!authToken){this.value.erpDirectSaveConfirmed=false;return this.snapshot();}
     try{
       const response=await fetch(`${DEFAULT_MANAGED_ERP_URL}/erp-config/me`,{headers:{Authorization:`Bearer ${authToken}`,Accept:'application/json'},redirect:'error',signal:AbortSignal.timeout(15000)});
       const body=await response.json().catch(()=>({}));
       if(!response.ok||body.ready!==true||!body.config)throw new Error(this.requireManaged?(body.error||'请在账号页面保存互拓账号和密码'):'还没有配置互拓账号，请在账号页面填写');
-      const config=body.config;this.value={...this.value,erpManaged:true,erpToken:authToken,erpBaseUrl:String(config.baseUrl||DEFAULT_MANAGED_ERP_URL),erpTenantId:String(config.tenantId||'managed'),erpClientId:'',erpClientSecret:'',erpUsername:String(config.username||''),erpPassword:'',company:'',buyerName:String(config.buyerName||''),erpDraftApiConfirmed:config.canSubmitDrafts===true,erpDraftConvertConfirmed:config.canConvertDrafts===true};
+      const config=body.config;this.value={...this.value,erpManaged:true,erpToken:authToken,erpBaseUrl:String(config.baseUrl||DEFAULT_MANAGED_ERP_URL),erpTenantId:String(config.tenantId||'managed'),erpClientId:'',erpClientSecret:'',erpUsername:String(config.username||''),erpPassword:'',company:'',buyerName:String(config.buyerName||''),erpDraftApiConfirmed:config.canSubmitDrafts===true,erpDraftConvertConfirmed:config.canConvertDrafts===true,erpDirectSaveConfirmed:config.canSavePending===true};
       return this.snapshot();
     }catch(error){this.managedError=String(error.message||'互拓自动连接失败').slice(0,240);return this.snapshot();}
   }
@@ -39,11 +39,12 @@ class BuyerSettings{
     const persisted={...next,erpToken:''};await atomicJson(this.file,{encrypted:this.storage.encrypt(JSON.stringify(persisted))});this.value=next;this.managedError='';this.client=null;this.catalogCache=null;this.onlineTable=null;return this.snapshot();
   }
   async clearLocal(){
-    const next={...this.value,erpManaged:false,erpToken:'',erpBaseUrl:'',erpTenantName:'',erpTenantId:'',erpClientId:'',erpClientSecret:'',erpUsername:'',erpPassword:'',company:'',buyerName:'',erpHttpTestOrigin:'',erpDraftApiConfirmed:false,erpDraftConvertConfirmed:false};
+    const next={...this.value,erpManaged:false,erpToken:'',erpBaseUrl:'',erpTenantName:'',erpTenantId:'',erpClientId:'',erpClientSecret:'',erpUsername:'',erpPassword:'',company:'',buyerName:'',erpHttpTestOrigin:'',erpDraftApiConfirmed:false,erpDraftConvertConfirmed:false,erpDirectSaveConfirmed:false};
     await atomicJson(this.file,{encrypted:this.storage.encrypt(JSON.stringify(next))});this.value=next;this.managedError='';this.client=null;this.catalogCache=null;return this.snapshot();
   }
-  async erp(){if(!this.configured())throw Object.assign(new Error(this.managedError||(this.requireManaged?'请先由管理员关联互拓账号':'请先填写当前买手的互拓账号配置')),{tag:'互拓未配置'});if(!this.client){const {ErpClient}=await import('./erp/client.mjs');this.client=new ErpClient({...this.value,erpDraftApiConfirmed:this.value.erpManaged?this.value.erpDraftApiConfirmed===true:true,erpDraftConvertConfirmed:this.value.erpManaged?this.value.erpDraftConvertConfirmed===true:this.value.target==='pending'});}return this.client;}
+  async erp(){if(!this.configured())throw Object.assign(new Error(this.managedError||(this.requireManaged?'请先由管理员关联互拓账号':'请先填写当前买手的互拓账号配置')),{tag:'互拓未配置'});if(!this.client){const {ErpClient}=await import('./erp/client.mjs');this.client=new ErpClient({...this.value,erpDraftApiConfirmed:this.value.erpManaged?this.value.erpDraftApiConfirmed===true:true,erpDraftConvertConfirmed:this.value.erpManaged?this.value.erpDraftConvertConfirmed===true:true,erpDirectSaveConfirmed:this.value.erpManaged?this.value.erpDirectSaveConfirmed===true:true});}return this.client;}
   async catalogs(signal){if(this.catalogCache&&Date.now()-this.catalogCache.at<5*60000)return this.catalogCache.value;if(this.catalogPromise)return this.catalogPromise;this.catalogPromise=(async()=>{const client=await this.erp();const [permissions,dictionaries,categories]=await Promise.all([client.permissions(signal),client.dictionaries(signal),client.categories(signal)]);if(!Array.isArray(dictionaries)||!Array.isArray(categories))throw new Error('互拓字典或类别结构无效');const value={permissions,dictionaries,categories:categories.filter(row=>row.status===1)};this.catalogCache={at:Date.now(),value};return value;})();try{return await this.catalogPromise;}finally{this.catalogPromise=null;}}
+  async supplierDirectory(signal){const client=await this.erp();if(this.supplierCache?.client===client&&Date.now()-this.supplierCache.at<5*60000)return this.supplierCache.rows;if(this.supplierPromise?.client===client)return this.supplierPromise.promise;const promise=(async()=>{const rows=require('./buyer-mapping').supplierRows(await client.supplierDirectory(signal));this.supplierCache={client,at:Date.now(),rows};return rows;})();this.supplierPromise={client,promise};try{return await promise;}finally{if(this.supplierPromise?.promise===promise)this.supplierPromise=null;}}
   async onlineTableClient(authToken=''){if(!authToken)throw new Error('请先登录 TDL 账号');return new OnlineTableClient({baseUrl:DEFAULT_TABLE_SERVICE_URL,tableId:this.value.onlineTableId,authToken});}
 }
 module.exports={BuyerSettings,DEFAULT_MANAGED_ERP_URL};

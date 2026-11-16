@@ -1,5 +1,6 @@
 // The supplier is the source of supply facts; the marketplace is the source
 // of marketing pictures. Keep both evidence records instead of merging them.
+const {sortSizes}=require('./size-order');
 const supplierDomains = { wsy: ['wsy.com'], zwd: ['17zwd.com'], qcc: ['17qcc.com'], e3hui: ['e3hui.com','e3hui.cn'] };
 const within = (host, domains) => domains.some(domain => host === domain || host.endsWith('.' + domain));
 function sourceUrl(value, domains) {
@@ -33,7 +34,7 @@ function buildBuyerSource(item, marketplace = null) {
     priceTiers: Array.isArray(details.priceTiers) ? details.priceTiers.slice(0,40) : [],
     resaleFloor: Number.isFinite(details.resaleFloor) && details.resaleFloor > 0 ? details.resaleFloor : null,
     colors: Array.isArray(details.colors) ? details.colors.slice(0,80) : [],
-    sizes: Array.isArray(details.sizes) ? details.sizes.slice(0,80) : [],
+    sizes: sortSizes(Array.isArray(details.sizes) ? details.sizes.slice(0,80) : []),
     quality: details.quality || null,
     description: clean(details.description,6000), visibleText: clean(details.visibleText,24000),
     attributes: (Array.isArray(details.attributes) ? details.attributes : []).filter(value=>typeof value==='string').slice(0,80).map(value=>value.slice(0,300)),

@@ -38,12 +38,12 @@ test('实际 Electron：买手自动化入口创建本地任务，显示来源�
     };
   },{templateCopy,buyerRoot});
   await page.locator('#username').fill('buyer-ui-qa');await page.locator('#password').fill('fixture-password');await page.locator('#loginButton').click();await page.locator('#appShell').waitFor({state:'visible'});
-  await page.locator('#navBuyer').click();assert.equal(await page.locator('#buyerPage').isVisible(),true);assert.equal(await page.locator('#buyerTaskList .empty').isVisible(),true);
-  await page.locator('#buyerTemplateExport').click();await page.waitForFunction(()=>document.querySelector('#buyerAutoMessage').textContent.includes('测试模板已保存'));assert.equal((await fs.stat(templateCopy)).size>5000,true);
+  await page.locator('#navBuyer').click();await page.locator('[data-buyer-tab=progress]').click();assert.equal(await page.locator('#buyerPage').isVisible(),true);assert.equal(await page.locator('#buyerTaskList .empty').isVisible(),true);
+  await page.locator('[data-buyer-tab=import]').click();await page.locator('#buyerTemplateExport').click();await page.waitForFunction(()=>document.querySelector('#buyerAutoMessage').textContent.includes('测试模板已保存'));assert.equal((await fs.stat(templateCopy)).size>5000,true);
   await page.locator('#navSettings').click();await page.locator('#buyerConfigSelectRoot').click();await page.waitForFunction(()=>document.querySelector('#buyerConfig_productRootDir').value.length>0);assert.equal((await page.evaluate(()=>window.desktop.snapshot())).buyerSettings.productRootDir,buyerRoot);
   await fs.mkdir(path.join(root,'output/playwright'),{recursive:true});await page.screenshot({path:path.join(root,'output/playwright/desktop-buyer-folder-setting.png')});
   await page.locator('#navBuyer').click();await page.locator('#buyerPage').waitFor({state:'visible'});
-  await page.locator('.buyer-manual-entry > summary').click();
+  await page.locator('[data-buyer-tab=import]').click();await page.locator('.buyer-manual-entry > summary').click();
   await page.locator('#buyerArticleNo').fill('BUYER-001');await page.locator('#buyerSourceType').selectOption('taobao');await page.locator('#buyerSourceUrl').fill('https://item.taobao.com/item.htm?id=12345678');await page.locator('#createBuyerTask').click();
   await page.waitForFunction(()=>document.querySelector('#buyerTaskList').textContent.includes('淘宝/天猫'));assert.equal(await page.locator('#buyerTaskList [data-buyer-task]').count(),1);assert.match(await page.locator('#buyerTaskList').textContent(),/尚未添加商品图/);assert.doesNotMatch(await page.locator('#buyerTaskList').textContent(),/ERP 已写入|已提交/);
   const snapshot=await page.evaluate(()=>window.desktop.snapshot());assert.equal(snapshot.buyerTasks.length,1);assert.equal(snapshot.buyerTasks[0].status,'needs_image');assert.equal(snapshot.buyerTasks[0].sourceType,'taobao');
@@ -51,7 +51,7 @@ test('实际 Electron：买手自动化入口创建本地任务，显示来源�
   const imageFile=path.join(dir,'衬衫.png');await fs.writeFile(imageFile,Buffer.from(image.split(',')[1],'base64'));
   await page.locator('#buyerBatchImages').setInputFiles([imageFile]);
   await page.waitForFunction(()=>document.querySelectorAll('#buyerTaskList [data-buyer-task]').length===2);
-  await page.locator('.buyer-manual-tools > summary').click();
+  await page.locator('[data-buyer-tab=progress]').click();await page.locator('.buyer-manual-tools > summary').click();
   await page.locator('#buyerSelectAll').click();await page.locator('#buyerTaobaoBatch').click();
   await page.waitForFunction(()=>document.querySelector('#buyerMessage').textContent.includes('已提交 1 个'));
   let state=await page.evaluate(()=>window.desktop.snapshot());
@@ -75,7 +75,7 @@ test('实际 Electron：买手自动化入口创建本地任务，显示来源�
   await page.locator('.buyer-taobao-compare').click();
   await waitSnapshot(data=>data.jobs[0]?.status==='complete'&&data.jobs[0]?.items[0]?.visualComparison?.score===96);
   state=await page.evaluate(()=>window.desktop.snapshot());assert.equal(state.jobs.length,1);assert.equal(await app.evaluate(()=>buyerModelCalls),1,JSON.stringify(state.jobs[0]));
-  await assert.rejects(page.evaluate(({task,job})=>window.desktop.confirmBuyerTaobao(task,job,0),{task:task.id,job:state.jobs[0].id}),/请先核对模型分数/);
+  await assert.rejects(page.evaluate(({task,job})=>window.desktop.confirmBuyerTaobao(task,job,0),{task:task.id,job:state.jobs[0].id}),/请先看图并人工确认/);
   await page.locator('.buyer-taobao-review').click();await page.locator('.review-next').click();await page.locator('.confirm-same').click();
   await page.locator('#reviewDialog').waitFor({state:'hidden'});await page.locator('#navBuyer').click();
   await page.waitForFunction(()=>!!document.querySelector('.buyer-taobao-confirm'));await page.locator('.buyer-taobao-confirm').click();

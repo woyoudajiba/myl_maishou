@@ -1,6 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const sales = require('../taobao-sales');
 const { atomicJson } = require('./accounts');
 
 const imageData = value => typeof value === 'string' && value.length <= 12 * 1024 * 1024 && /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/i.test(value);
@@ -23,7 +24,7 @@ class BuyerWorkflow {
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     return this.snapshot();
   }
-  snapshot() { return this.state.tasks.map(({imageFile,automation,...task})=>({...structuredClone(task),hasImage:!!imageFile,...(automation?{automation:{enabled:automation.enabled,step:automation.step,state:automation.state,error:automation.error||'',waitingReason:automation.waitingReason||'',tags:automation.tags||[],updatedAt:automation.updatedAt,result:structuredClone(automation.result||null),supplierCount:automation.supplierCandidates?.length||0,searchCandidateCount:automation.searchCandidates?.length||0,searchCandidates:(automation.searchCandidates||[]).slice(0,24).map(row=>({platform:row.platform,id:row.id,title:row.title,shopName:row.shopName,detailUrl:row.detailUrl,imageUrl:row.imageUrl,price:row.price,visualComparison:row.visualComparison,imageSimilarityStatus:row.imageSimilarityStatus,imageSimilarityError:row.imageSimilarityError})),rejectedSupplierCandidates:(automation.rejectedSupplierCandidates||[]).map(row=>({platform:row.platform,title:row.title,detailUrl:row.detailUrl,rejectedAt:row.rejectedAt})),supplierCandidates:(automation.supplierCandidates||[]).map(row=>({platform:row.platform,id:row.id,title:row.title,shopName:row.shopName,detailUrl:row.detailUrl,imageUrl:row.imageUrl,price:row.price,visualComparison:row.visualComparison})),supplierSelection:structuredClone(automation.supplierSelection||null),supplier:automation.supplier?{platform:automation.supplier.platform,detailUrl:automation.supplier.detailUrl,title:automation.supplier.title,shopName:automation.supplier.shopName,visualComparison:automation.supplier.visualComparison,imageSimilarityStatus:automation.supplier.imageSimilarityStatus}:null,supplierComparison:automation.supplierComparison?{status:automation.supplierComparison.status,items:(automation.supplierComparison.items||[]).slice(0,24).map(row=>({platform:row.platform,detailUrl:row.detailUrl,visualComparison:row.visualComparison,imageSimilarityStatus:row.imageSimilarityStatus,imageSimilarityError:row.imageSimilarityError}))}:null,comparisonJobId:automation.checkpoints?.supplierComparison?.jobId||'',platformResults:(automation.platformResults||[]).slice(0,4).map(row=>({key:String(row.key||'').slice(0,15),phase:String(row.phase||'').slice(0,40),message:String(row.message||'').slice(0,200),total:Number(row.total)||0})),missing:automation.missing||[]}}:{})})); }
+  snapshot() { return this.state.tasks.map(({imageFile,automation,...task})=>({...structuredClone(task),hasImage:!!imageFile,...(automation?{automation:{enabled:automation.enabled,searchMode:automation.searchMode==='detail'?'detail':'top',step:automation.step,state:automation.state,error:automation.error||'',waitingReason:automation.waitingReason||'',collectionExternalId:String(automation.collectionExternalId||''),collectionPolling:automation.collectionPolling?structuredClone(automation.collectionPolling):null,tags:automation.tags||[],updatedAt:automation.updatedAt,result:structuredClone(automation.result||null),draftId:String(automation.draftId||''),draftVersion:Number(automation.draftVersion)||0,supplierMapping:automation.supplierMapping?structuredClone(automation.supplierMapping):null,mappingCandidates:automation.mappingCandidates?{catalogCount:automation.mappingCandidates.catalogCount,completeDirectory:automation.mappingCandidates.completeDirectory===true,candidates:(automation.mappingCandidates.candidates||[]).slice(0,80).map(row=>({candidateId:row.candidateId,supplierName:row.supplierName,supplierAb:row.supplierAb,storeHouse:row.storeHouse}))}:null,erpDuplicatePolicy:automation.erpDuplicatePolicy||'',duplicateReview:automation.duplicateReview?{status:String(automation.duplicateReview.status||'').slice(0,30),scope:automation.duplicateReview.scope?{complete:automation.duplicateReview.scope.complete===true,warnings:(automation.duplicateReview.scope.warnings||[]).slice(0,3).map(String)}:null,codeContext:structuredClone(automation.duplicateReview.codeContext||null),candidates:(automation.duplicateReview.candidates||[]).slice(0,12).map(row=>({id:String(row.id||''),productNo:String(row.productNo||''),articleNo:String(row.articleNo||''),productTypeName:String(row.productTypeName||''),supplierName:String(row.supplierName||''),regionCode:String(row.regionCode||''),region:String(row.region||''),supplierAbbr:String(row.supplierAbbr||''),supplierArticleNo:String(row.supplierArticleNo||''),imagePreview:String(row.imagePreview||''),imageError:String(row.imageError||''),codeSignals:structuredClone(row.codeSignals||{}),match:structuredClone(row.match||null)}))}:null,supplierCount:automation.supplierCandidates?.length||0,searchCandidateCount:automation.searchCandidateCount||automation.searchCandidates?.length||0,searchCandidates:(automation.searchCandidates||[]).slice(0,24).map(row=>({platform:row.platform,id:row.id,title:row.title,shopName:row.shopName,detailUrl:row.detailUrl,imageUrl:row.imageUrl,price:row.price,visualComparison:row.visualComparison,imageSimilarityStatus:row.imageSimilarityStatus,imageSimilarityError:row.imageSimilarityError})),rejectedSupplierCandidates:(automation.rejectedSupplierCandidates||[]).map(row=>({platform:row.platform,title:row.title,detailUrl:row.detailUrl,rejectedAt:row.rejectedAt})),supplierCandidates:(automation.supplierCandidates||[]).map(row=>({platform:row.platform,id:row.id,title:row.title,shopName:row.shopName,detailUrl:row.detailUrl,imageUrl:row.imageUrl,price:row.price,visualComparison:row.visualComparison})),supplierSelection:structuredClone(automation.supplierSelection||null),supplier:automation.supplier?{platform:automation.supplier.platform,detailUrl:automation.supplier.detailUrl,title:automation.supplier.title,shopName:automation.supplier.shopName,visualComparison:automation.supplier.visualComparison,imageSimilarityStatus:automation.supplier.imageSimilarityStatus}:null,supplierComparison:automation.supplierComparison?{status:automation.supplierComparison.status,items:(automation.supplierComparison.items||[]).slice(0,24).map(row=>({platform:row.platform,detailUrl:row.detailUrl,visualComparison:row.visualComparison,imageSimilarityStatus:row.imageSimilarityStatus,imageSimilarityError:row.imageSimilarityError}))}:null,marketplaceComparisonJobId:automation.checkpoints?.marketplaceComparison?.jobId||'',comparisonJobId:automation.checkpoints?.supplierComparison?.jobId||'',platformResults:(automation.platformResults||[]).slice(0,4).map(row=>({key:String(row.key||'').slice(0,15),phase:String(row.phase||'').slice(0,40),message:String(row.message||'').slice(0,200),total:Number(row.total)||0})),missing:automation.missing||[]}}:{})})); }
   async patchTask(id,patch,message='') {
     return this.mutate(async()=>{const task=this.task(id);if(!task)throw new Error('买手任务不存在');Object.assign(task,patch);task.updatedAt=new Date().toISOString();if(message)task.events.push({at:task.updatedAt,message:String(message).slice(0,300)});return this.snapshot().find(item=>item.id===id);});
   }
@@ -75,7 +76,7 @@ class BuyerWorkflow {
     let imageUrl = '';
     try { const image = new URL(value.imageUrl); if (image.protocol === 'https:' && !image.username && !image.password && !image.port && /(^|\.)(?:alicdn\.com|taobaocdn\.com|tbcdn\.cn)$/.test(image.hostname)) imageUrl = image.href; } catch {}
     if (!imageUrl) return null;
-    return { id: String(value.id || new URL(url).searchParams.get('id')).slice(0, 120), title: String(value.title || '').slice(0, 1000), detailUrl: url, imageUrl, price: Number.isFinite(Number(value.price)) && Number(value.price) > 0 ? Number(value.price) : null, salesText: String(value.salesText || '').slice(0, 200), shopName: String(value.shopName || '').slice(0, 300), location: String(value.location || '').slice(0, 120) };
+    return { id: String(value.id || new URL(url).searchParams.get('id')).slice(0, 120), title: String(value.title || '').slice(0, 1000), detailUrl: url, imageUrl, price: Number.isFinite(Number(value.price)) && Number(value.price) > 0 ? Number(value.price) : null, ...sales.fields(value), shopName: String(value.shopName || '').slice(0, 300), location: String(value.location || '').slice(0, 120) };
   }
   async mutate(action) {
     const operation = this.mutation.catch(() => {}).then(async () => {
@@ -143,18 +144,22 @@ class BuyerWorkflow {
     if(commandId&&task.marketplaceSearch?.completedCommandId===commandId)return this.snapshot().find(item=>item.id===id);
     if(commandId&&task.marketplaceSearch?.commandId&&task.marketplaceSearch.commandId!==commandId)throw new Error('淘宝搜索结果已过期，请刷新任务');
     if (!Array.isArray(candidates) || candidates.length > 60) throw new Error('淘宝候选数量无效');
-    const safe = candidates.map(value => this.safeTaobaoCandidate(value)).filter(Boolean);
+    const safe = sales.sort(candidates.map(value => this.safeTaobaoCandidate(value)).filter(Boolean));
     if (!safe.length) throw new Error('淘宝图搜没有返回可用商品链接');
     return this.mutate(async () => {
       task.marketplaceCandidates = safe; task.marketplaceQueryId = crypto.randomUUID();
       task.marketplaceSearch = { status: 'ready', count: safe.length, error: '', completedCommandId: commandId }; task.updatedAt = new Date().toISOString();
-      task.events.push({ at: task.updatedAt, message: `淘宝图搜返回 ${safe.length} 个候选；等待人工确认开始模型筛选` });
+      task.events.push({ at: task.updatedAt, message: `淘宝图搜返回 ${safe.length} 个候选，已按销量降序排列；模型对比后由人工看图确认套图来源` });
       return this.snapshot().find(item => item.id === id);
     });
   }
-  async failTaobaoSearch(id, message) {
+  async failTaobaoSearch(id, message, recovery=null, commandId='') {
     const task = this.task(id); if (!task) return null;
-    return this.mutate(async () => { task.marketplaceSearch = { status: 'failed', error: String(message || '淘宝搜索失败').slice(0,180) }; task.updatedAt = new Date().toISOString(); task.events.push({ at: task.updatedAt, message: `淘宝图搜暂停：${task.marketplaceSearch.error}` }); return this.snapshot().find(item => item.id === id); });
+    return this.mutate(async () => {
+      if(commandId&&task.marketplaceSearch?.commandId&&task.marketplaceSearch.commandId!==commandId)throw new Error('淘宝搜索失败回执已过期');
+      const safeRecovery=recovery?.kind==='taobao_verification'?{kind:'taobao_verification',opened:recovery.opened===true,page:['verification','image_search'].includes(recovery.page)?recovery.page:'unavailable'}:null;
+      task.marketplaceSearch = { status: 'failed', commandId, error: String(message || '淘宝搜索失败').slice(0,180),...(safeRecovery?{recovery:safeRecovery}:{}) }; task.updatedAt = new Date().toISOString(); task.events.push({ at: task.updatedAt, message: `淘宝图搜暂停：${task.marketplaceSearch.error}` }); return this.snapshot().find(item => item.id === id);
+    });
   }
   async setMarketplaceJob(id, jobId, status) {
     const task = this.task(id); if (!task) throw new Error('买手任务不存在');
@@ -165,10 +170,17 @@ class BuyerWorkflow {
     if (!task.imageFile) throw new Error('请先给买手任务添加商品图');
     return this.mutate(async () => { task.searchCommandId = String(commandId || '').slice(0,80); task.status='supplier_search_queued'; task.updatedAt=new Date().toISOString(); task.events.push({at:task.updatedAt,message:'已排队，等待配对浏览器启动四平台搜货'}); return this.snapshot().find(item=>item.id===id); });
   }
-  async setMarketplaceLink(id, input = {}) {
+  async setMarketplaceLink(id, input = {}, {continueAutomation=false} = {}) {
     const task = this.task(id); if (!task) throw new Error('买手任务不存在');
     const url = validSourceUrl(input.url, 'taobao'); if (!url) throw new Error('请填写完整有效的淘宝/天猫商品链接');
-    return this.mutate(async () => { task.marketplaceCandidate = { url, title: String(input.title || '').slice(0,500), salesText: String(input.salesText || '').slice(0,300), remark: String(input.remark || '').slice(0,2000), confirmedSame: input.confirmedSame === true, jobId: /^[\da-f-]{36}$/i.test(input.jobId || '') ? input.jobId : '', candidateIndex: Number.isInteger(input.candidateIndex) ? input.candidateIndex : null }; task.updatedAt = new Date().toISOString(); task.events.push({ at: task.updatedAt, message: task.marketplaceCandidate.confirmedSame ? '人工确认了淘宝套图同款' : '已保存淘宝套图链接，等待同款核对' }); return this.snapshot().find(item => item.id === id); });
+    return this.mutate(async () => {
+      if(continueAutomation&&(!task.automation||task.automation.step!=='marketplace'||task.automation.state!=='attention'||input.confirmedSame!==true))throw new Error('该商品当前不在淘宝人工确认阶段，请重新打开任务核对');
+      task.marketplaceCandidate = { url, title: String(input.title || '').slice(0,500), salesText: String(input.salesText || '').slice(0,300), remark: String(input.remark || '').slice(0,2000), confirmedSame: input.confirmedSame === true, jobId: /^[\da-f-]{36}$/i.test(input.jobId || '') ? input.jobId : '', candidateIndex: Number.isInteger(input.candidateIndex) ? input.candidateIndex : null };
+      task.updatedAt = new Date().toISOString();
+      if(continueAutomation)task.automation={...task.automation,marketplace:structuredClone(task.marketplaceCandidate),step:'collection',state:'queued',enabled:true,inFlight:null,error:'',waitingReason:'',tags:[],erpDuplicatePolicy:'manual_after_pending',updatedAt:task.updatedAt};
+      task.events.push({ at: task.updatedAt, message: continueAutomation?'人工看图确认淘宝套图来源，继续互拓采集':task.marketplaceCandidate.confirmedSame ? '人工确认了淘宝套图同款' : '已保存淘宝套图链接，等待同款核对' });
+      return this.snapshot().find(item => item.id === id);
+    });
   }
   async setSupplierCandidate(id, candidateIndex, compiled) {
     const task=this.task(id);if(!task)throw new Error('买手任务不存在');

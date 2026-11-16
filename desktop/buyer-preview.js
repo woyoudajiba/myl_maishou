@@ -53,22 +53,23 @@ async function queueBuyerCandidateGallery({workflow,bridge,task,index,retry=fals
   return{state:'waiting',commandId:command.id};
 }
 
-async function buyerTaskComparisonPreview({workflow,bridge,task,indexes,downloadCandidate,downloadImagePreview}){
-  if(!task?.automation||!Array.isArray(indexes)||indexes.length>4||indexes.some(index=>!Number.isInteger(index)||index<0||index>=task.automation.searchCandidates?.length))throw new Error('供应商图片对照请求无效');
+async function buyerTaskComparisonPreview({workflow,bridge,task,indexes,downloadCandidate,downloadImagePreview,kind='supplier'}){
+  const marketplace=kind==='taobao',rows=marketplace?task?.marketplaceCandidates:task?.automation?.searchCandidates;
+  if(!task?.automation||!Array.isArray(indexes)||indexes.length>4||indexes.some(index=>!Number.isInteger(index)||index<0||index>=(rows?.length||0)))throw new Error('供应商图片对照请求无效');
   const source=imageData(await workflow.image(task.id));
-      const sourceRecord=task.automation.source||task.automation.checkpoints?.source?.result||{};
+  const sourceRecord=task.automation.source||task.automation.checkpoints?.source?.result||{};
   const primaryUrl=sourceRecord.primaryImageUrl||sourceRecord.images?.[0]||'';
-  const sourceUrls=(sourceRecord.images||[]).filter(url=>url!==primaryUrl);
+  const sourceUrls=[...new Set([...(marketplace?task.automation.supplierDetails?.images||[]:[]),...(sourceRecord.images||[])])].filter(url=>url!==primaryUrl);
   const sourceThumbs=await thumbnails(sourceUrls,downloadImagePreview);
   const sourceGallery=[{image:source,width:null,height:null},...sourceThumbs.images];
-  const jobId=task.automation.checkpoints?.supplierComparison?.jobId||'';
+  const jobId=task.automation.checkpoints?.[marketplace?'marketplaceComparison':'supplierComparison']?.jobId||'';
   const job=bridge?.snapshot().jobs.find(row=>row.id===jobId&&row.buyerTaskId===task.id)||null;
-  const comparisons=job?.items||task.automation.checkpoints?.supplierComparison?.result?.items||[];
+  const comparisons=job?.items||task.automation.checkpoints?.[marketplace?'marketplaceComparison':'supplierComparison']?.result?.items||[];
   const candidates=await Promise.all(indexes.map(async index=>{
-    const candidate=task.automation.searchCandidates[index];
+    const candidate=rows[index];
     const link=sourceLink(candidate?.detailUrl);
-    if(!link||link.sourceType!==candidate.platform||!['wsy','zwd','qcc','e3hui'].includes(candidate.platform))return{index,image:'',error:'供应商链接无效，未加载图片'};
-    const compared=comparisons.find(item=>item.detailUrl===candidate.detailUrl&&item.platform===candidate.platform)||null;
+    if(!link||link.sourceType!==(marketplace?'taobao':candidate.platform)||!(marketplace?['taobao']:['wsy','zwd','qcc','e3hui']).includes(marketplace?'taobao':candidate.platform))return{index,image:'',error:'供应商链接无效，未加载图片'};
+    const compared=comparisons.find(item=>item.detailUrl===candidate.detailUrl&&item.platform===(marketplace?'taobao':candidate.platform))||null;
     try{
       let image='';
       if(job&&compared){const compareIndex=job.items.indexOf(compared);if(compareIndex>=0)try{image=await bridge.candidateImage(job.id,compareIndex);}catch{}}
@@ -82,4 +83,10 @@ async function buyerTaskComparisonPreview({workflow,bridge,task,indexes,download
 }
 
 function imageData(buffer){return`data:image/jpeg;base64,${buffer.toString('base64')}`;}
-module.exports={buyerTaskComparisonPreview,queueBuyerCandidateGallery,candidateGallery,gallerySlot,platformNames};
+async function supplierImagePreviews({task,indexes,downloadImagePreview,full=false,downloadFull}){
+  const images=task?.automation?.supplierDetails?.images;
+  if(!Array.isArray(images)||!Array.isArray(indexes)||indexes.length>12||indexes.some(index=>!Number.isInteger(index)||index<0||index>=images.length))throw new Error('供应商图片选择请求无效');
+  if(full&&(indexes.length!==1||!downloadFull))throw new Error('一次仅能放大一张供应商图片');
+  return Promise.all(indexes.map(async index=>{const url=images[index];try{if(full){const preview=await limited(()=>downloadFull(url));return{index,image:preview.dataUrl,width:preview.evidence?.width,height:preview.evidence?.height};}let item=imageCache.get(url);if(!item){const preview=await limited(()=>downloadImagePreview(url));item={image:preview.dataUrl,width:preview.width,height:preview.height};imageCache.set(url,item);if(imageCache.size>512)imageCache.delete(imageCache.keys().next().value);}return{index,...item};}catch{return{index,error:'图片暂时无法加载，请重试或打开供应商页面核对'};}}));
+}
+module.exports={supplierImagePreviews,buyerTaskComparisonPreview,queueBuyerCandidateGallery,candidateGallery,gallerySlot,platformNames};

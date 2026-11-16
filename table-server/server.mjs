@@ -136,15 +136,46 @@ function createSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS table_history_table_created ON table_history(table_id, created_at DESC, id DESC);
   `);
+  const needsConfirmationMigration=!db.prepare('PRAGMA table_info(rows)').all().some(item=>item.name==='confirmed_by');
   // Additive migration: retain existing tables, rows and task receipts.
+  db.exec('BEGIN IMMEDIATE');
+  try{
   for (const [name, column, definition] of [
     ['tables', 'revision', 'INTEGER NOT NULL DEFAULT 0'],
     ['rows', 'deleted', 'INTEGER NOT NULL DEFAULT 0'],
     ['rows', 'automation_step', "TEXT NOT NULL DEFAULT ''"],
+    ['rows', 'confirmed_by', "TEXT NOT NULL DEFAULT ''"],
+    ['rows', 'confirmed_user_id', "TEXT NOT NULL DEFAULT ''"],
+    ['rows', 'confirmed_at', "TEXT NOT NULL DEFAULT ''"],
     ['rows', 'fields_json', "TEXT NOT NULL DEFAULT '{}'"],
     ['table_history', 'row_count', 'INTEGER NOT NULL DEFAULT 0'],
     ['table_history', 'changes_json', "TEXT NOT NULL DEFAULT '[]'"],
   ]) if (!db.prepare(`PRAGMA table_info(${name})`).all().some(item => item.name === column)) db.exec(`ALTER TABLE ${name} ADD COLUMN ${column} ${definition}`);
+  if(needsConfirmationMigration){
+    // Only a recorded approval transition establishes historical provenance.
+    // Progress updates and last editors must never become confirmation users.
+    const missing=new Map(db.prepare("SELECT id,source_url FROM rows WHERE human_status='approved' AND confirmed_by='' ").all().map(row=>[row.id,row]));
+    const write=db.prepare('UPDATE rows SET confirmed_by=?,confirmed_user_id=?,confirmed_at=? WHERE id=?');
+      for(const entry of db.prepare("SELECT actor,created_at,changes_json FROM table_history WHERE action IN ('update','import') ORDER BY id DESC").iterate()){
+        if(!missing.size)break;
+        const actor=confirmationActor(entry.actor);if(!actor.name)continue;
+        let changes;try{changes=JSON.parse(entry.changes_json);}catch{continue;}
+        if(!Array.isArray(changes))continue;
+        for(const change of changes){
+          const current=missing.get(change.rowId);
+          if(!current||change.after?.humanStatus!=='approved'||change.before?.humanStatus==='approved'||change.after?.sourceUrl!==current.source_url)continue;
+          const at=Number.isFinite(Date.parse(change.after.updatedAt))?change.after.updatedAt:entry.created_at;
+          write.run(actor.name,actor.id,at,current.id);missing.delete(current.id);
+        }
+      }
+  }
+    db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');throw error;}
+}
+
+function confirmationActor(value){
+  const actor=clean(value,160),match=actor.match(/^(.*) \(([^()]+)\)$/);
+  return match?{name:clean(match[1],100),id:clean(match[2],160)}:{name:actor,id:actor};
 }
 
 function hash(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
@@ -165,6 +196,7 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
       ...storedFields(value),
       id: value.id, position: value.position, articleNo: value.article_no, sourceType: value.source_type,
       sourceUrl: value.source_url, title: value.title, note: value.note, humanStatus: value.human_status,
+      confirmedBy:value.confirmed_by||'',confirmedUserId:value.confirmed_user_id||'',confirmedAt:value.confirmed_at||'',
       taskId: value.task_id, automationState: value.automation_state, automationStep: value.automation_step || '', automationError: value.automation_error,
       erpProductNo: value.erp_product_no, version: value.version, updatedBy: value.updated_by,
       createdAt: value.created_at, updatedAt: value.updated_at,
@@ -193,6 +225,7 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
       const body = await response.json().catch(() => null);
       if (!body?.user?.id) throw Object.assign(new Error('账号认证响应无效'), { status: 401 });
       req.tableUser = String(body.user.id);
+      req.tableConfirmation={id:req.tableUser,name:clean(body.user.displayName||body.user.username||req.tableUser,100)};
       req.tableActor = clean(body.user.displayName || body.user.username, 100) + ` (${req.tableUser})`;
       isAdmin = body.user.isAdmin === true || String(body.user.role || '').toUpperCase() === 'ADMIN';
     }
@@ -237,10 +270,10 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
   function publicHistory(value) {
     return { id: Number(value.id), action: value.action, actor: value.actor, summary: value.summary, rowCount: value.row_count, createdAt: value.created_at };
   }
-  function importRows(tableId, inputRows, user) {
+  function importRows(tableId, inputRows, user, confirmation=confirmationActor(user)) {
     if (!Array.isArray(inputRows) || !inputRows.length || inputRows.length > MAX_ROWS_PER_REQUEST) throw new Error(`每次最多导入${MAX_ROWS_PER_REQUEST}行`);
     const now = new Date().toISOString();
-    const insert = db.prepare(`INSERT INTO rows(id,table_id,position,article_no,source_type,source_url,title,note,human_status,updated_by,created_at,updated_at,fields_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    const insert = db.prepare(`INSERT INTO rows(id,table_id,position,article_no,source_type,source_url,title,note,human_status,updated_by,created_at,updated_at,fields_json,confirmed_by,confirmed_user_id,confirmed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     const inserted=[];
     const writeRows = rows => {
       const last = db.prepare('SELECT COALESCE(MAX(position),0) AS position FROM rows WHERE table_id = ?').get(tableId).position;
@@ -249,14 +282,14 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
         if (normalized.humanStatus==='approved' && !processableRow(normalized)) throw new Error('确认提交前需要填写支持的 HTTPS 商品链接');
         const id = /^[\da-f-]{36}$/i.test(String(input.id || '')) ? String(input.id) : crypto.randomUUID();
         if(!normalized.tableId)normalized.tableId=String(last+index+1).padStart(2,'0');
-        insert.run(id, tableId, last + index + 1, normalized.articleNo, normalized.sourceType, normalized.sourceUrl, normalized.title, normalized.note, normalized.humanStatus, user, now, now,JSON.stringify(rowFields(normalized)));
+        insert.run(id, tableId, last + index + 1, normalized.articleNo, normalized.sourceType, normalized.sourceUrl, normalized.title, normalized.note, normalized.humanStatus, user, now, now,JSON.stringify(rowFields(normalized)),normalized.humanStatus==='approved'?confirmation.name:'',normalized.humanStatus==='approved'?confirmation.id:'',normalized.humanStatus==='approved'?now:'');
         const saved=publicRow(row(id));inserted.push(saved);emit(tableId, id, 'row-upserted', saved);
       });
     };
     mutate(tableId, user, 'import', `新增/导入 ${inputRows.length} 行`, () => writeRows(inputRows));
     return { imported: inputRows.length, rows:inserted, table: publicTable(table(tableId)) };
   }
-  function updateRow(tableId, rowId, patch, ifVersion, user, taskId) {
+  function updateRow(tableId, rowId, patch, ifVersion, user, taskId, confirmation=confirmationActor(user)) {
     const current = row(rowId);
     if (!current || current.table_id !== tableId || (current.deleted && !current.task_id)) throw Object.assign(new Error('表格行不存在'), { status: 404 });
     if(taskId!==undefined && (!TABLE_ID.test(String(taskId)) || current.task_id!==taskId))throw Object.assign(new Error('该行已绑定其他任务，拒绝旧任务回写'),{status:409,current:publicRow(current)});
@@ -265,12 +298,22 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
     if (current.task_id && ['articleNo', 'sourceType', 'sourceUrl', 'humanStatus','selectDate','tableId'].some(key => Object.hasOwn(patch || {}, key) && patch[key] !== publicRow(current)[key])) throw Object.assign(new Error('该行已领取，不能再修改货号、来源链接、目录编号或确认状态'), { status: 409, current: publicRow(current) });
     const next = { ...storedFields(current),articleNo: current.article_no, sourceType: current.source_type, sourceUrl: current.source_url, title: current.title, note: current.note, humanStatus: current.human_status };
     for (const key of Object.keys(next)) if (Object.hasOwn(patch || {}, key)) next[key] = patch[key];
+    if(Object.hasOwn(patch||{},'supplierArticleNo')){
+      if(!taskId||current.task_id!==taskId)throw Object.assign(new Error('只有当前绑定任务可回填供应商货号'),{status:409,current:publicRow(current)});
+      const code=clean(patch.supplierArticleNo,121);
+      if(!code||code.length>120||/[\r\n]/.test(code))throw new Error('供应商货号格式无效');
+      if(current.article_no&&current.article_no!==code)throw Object.assign(new Error('表格已有其他货号，未覆盖；请核对供应商货号'),{status:409,current:publicRow(current)});
+      next.articleNo=code;
+    }
     const normalized = normalizeRow(next);
     if (!current.task_id && Object.hasOwn(patch || {}, 'sourceUrl') && normalized.sourceUrl!==current.source_url) normalized.humanStatus='pending';
     if (patch?.humanStatus==='approved' && !processableRow(normalized)) throw new Error('确认提交前需要填写支持的 HTTPS 商品链接');
     const automationState = Object.hasOwn(patch || {}, 'automationState') ? clean(patch.automationState, 40) : current.automation_state, automationStep = Object.hasOwn(patch || {}, 'automationStep') ? clean(patch.automationStep, 40) : (current.automation_step || ''), automationError = Object.hasOwn(patch || {}, 'automationError') ? clean(patch.automationError, 400) : current.automation_error, erpProductNo = Object.hasOwn(patch || {}, 'erpProductNo') ? clean(patch.erpProductNo, 200) : current.erp_product_no, now = new Date().toISOString();
+    const approval=normalized.humanStatus==='approved'
+      ?current.human_status==='approved'?{name:current.confirmed_by||'',id:current.confirmed_user_id||'',at:current.confirmed_at||''}:{...confirmation,at:now}
+      :{name:'',id:'',at:''};
     return mutate(tableId, user, 'update', `修改 ${current.article_no || current.id}`, () => {
-    db.prepare('UPDATE rows SET article_no=?,source_type=?,source_url=?,title=?,note=?,human_status=?,automation_state=?,automation_step=?,automation_error=?,erp_product_no=?,version=version+1,updated_by=?,updated_at=?,fields_json=? WHERE id=? AND table_id=?').run(normalized.articleNo, normalized.sourceType, normalized.sourceUrl, normalized.title, normalized.note, normalized.humanStatus, automationState, automationStep, automationError, erpProductNo, user, now,JSON.stringify(rowFields(normalized)), rowId, tableId);
+    db.prepare('UPDATE rows SET article_no=?,source_type=?,source_url=?,title=?,note=?,human_status=?,automation_state=?,automation_step=?,automation_error=?,erp_product_no=?,version=version+1,updated_by=?,updated_at=?,fields_json=?,confirmed_by=?,confirmed_user_id=?,confirmed_at=? WHERE id=? AND table_id=?').run(normalized.articleNo, normalized.sourceType, normalized.sourceUrl, normalized.title, normalized.note, normalized.humanStatus, automationState, automationStep, automationError, erpProductNo, user, now,JSON.stringify(rowFields(normalized)),approval.name,approval.id,approval.at, rowId, tableId);
     const updated = publicRow(row(rowId)); emit(tableId, rowId, 'row-updated', updated); return updated;
     });
   }
@@ -284,7 +327,7 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
     const checkpoint = db.prepare("SELECT * FROM table_history WHERE table_id=? AND id<=? AND snapshot_json <> 'null' ORDER BY id DESC LIMIT 1").get(tableId, Number(historyId));
     if (!checkpoint) throw new Error('历史基线不存在，无法恢复');
     const restored = new Map(JSON.parse(checkpoint.snapshot_json).map(item=>[item.id,item]));
-    const columns = {articleNo:'article_no',sourceType:'source_type',sourceUrl:'source_url',humanStatus:'human_status',taskId:'task_id',automationState:'automation_state',automationStep:'automation_step',automationError:'automation_error',erpProductNo:'erp_product_no',updatedBy:'updated_by',createdAt:'created_at',updatedAt:'updated_at'};
+    const columns = {articleNo:'article_no',sourceType:'source_type',sourceUrl:'source_url',humanStatus:'human_status',taskId:'task_id',automationState:'automation_state',automationStep:'automation_step',automationError:'automation_error',erpProductNo:'erp_product_no',confirmedBy:'confirmed_by',confirmedUserId:'confirmed_user_id',confirmedAt:'confirmed_at',updatedBy:'updated_by',createdAt:'created_at',updatedAt:'updated_at'};
     for (const entry of db.prepare('SELECT changes_json FROM table_history WHERE table_id=? AND id>=? AND id<? ORDER BY id').all(tableId,checkpoint.id,Number(historyId))) {
       for (const change of JSON.parse(entry.changes_json)) {
         if (!change.after || change.after.deleted) {restored.delete(change.rowId);continue;}
@@ -299,7 +342,7 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
   function restoredContent(saved, existing) {
     const identity=existing?.task_id?existing:saved,fields=storedFields(saved);
     if(existing?.task_id){const current=storedFields(existing);fields.selectDate=current.selectDate;fields.tableId=current.tableId;}
-    return {...saved,article_no:identity.article_no,source_type:identity.source_type,source_url:identity.source_url,human_status:existing?.task_id?identity.human_status:'pending',fields_json:JSON.stringify(fields)};
+    return {...saved,article_no:identity.article_no,source_type:identity.source_type,source_url:identity.source_url,human_status:existing?.task_id?identity.human_status:'pending',confirmed_by:existing?.task_id?existing.confirmed_by||'':'',confirmed_user_id:existing?.task_id?existing.confirmed_user_id||'':'',confirmed_at:existing?.task_id?existing.confirmed_at||'':'',fields_json:JSON.stringify(fields)};
   }
   function restorePlan(tableId, historyId) {
     const entry = historyEntry(tableId, historyId), saved = historyRows(tableId, historyId);
@@ -349,14 +392,14 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
         }
         const query=clean(url.searchParams.get('search'),300);
         if(!query)return json(res,200,{ok:true,total:0,index:0,row:null});
-        const searchable=['article_no','source_url','title','note','erp_product_no',...businessFields.map(key=>`COALESCE(json_extract(fields_json,'$.${key}'),'')`)];
+        const searchable=['article_no','source_url','title','note','confirmed_by','erp_product_no',...businessFields.map(key=>`COALESCE(json_extract(fields_json,'$.${key}'),'')`)];
         const predicate=searchable.map(column=>`instr(lower(${column}),lower(?))>0`).join(' OR '),args=[target.id,...searchable.map(()=>query)];
         const total=db.prepare(`SELECT COUNT(*) AS n FROM rows WHERE table_id=? AND deleted=0 AND (${predicate})`).get(...args).n;
         if(!total)return json(res,200,{ok:true,total:0,index:0,row:null});
         const requested=Number(url.searchParams.get('index'))||0,index=((Math.trunc(requested)%total)+total)%total;
         const found=db.prepare(`SELECT * FROM rows WHERE table_id=? AND deleted=0 AND (${predicate}) ORDER BY position,id LIMIT 1 OFFSET ?`).get(...args,index);
         const offset=db.prepare('SELECT COUNT(*) AS n FROM rows WHERE table_id=? AND deleted=0 AND (position < ? OR (position=? AND id<?))').get(target.id,found.position,found.position,found.id).n;
-        const publicValue=publicRow(found),matchFields=['articleNo','sourceUrl','title','note','erpProductNo',...businessFields].filter(key=>String(publicValue[key]||'').toLowerCase().includes(query.toLowerCase()));
+        const publicValue=publicRow(found),matchFields=['articleNo','sourceUrl','title','note','confirmedBy','erpProductNo',...businessFields].filter(key=>String(publicValue[key]||'').toLowerCase().includes(query.toLowerCase()));
         return json(res,200,{ok:true,total,index,row:publicValue,offset,matchFields});
       }
       if (req.method === 'GET' && !action) {
@@ -365,14 +408,14 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
         const status = clean(url.searchParams.get('status'), 20);
         const search = clean(url.searchParams.get('search'), 300);
         const where = ' AND deleted=0' + (status && humanStates.has(status) ? " AND human_status = ? AND source_url<>''" : '');
-        const searchWhere = search ? ` AND (article_no LIKE ? ESCAPE '\\' OR source_url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\' OR fields_json LIKE ? ESCAPE '\\')` : '';
+        const searchWhere = search ? ` AND (article_no LIKE ? ESCAPE '\\' OR source_url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\' OR confirmed_by LIKE ? ESCAPE '\\' OR fields_json LIKE ? ESCAPE '\\')` : '';
         const searchValue = `%${search.replace(/[\\%_]/g, char => `\\${char}`)}%`;
         const args = status && humanStates.has(status) ? [target.id, status] : [target.id];
-        if (search) args.push(...Array(5).fill(searchValue));
+        if (search) args.push(...Array(6).fill(searchValue));
         args.push(limit, offset);
         const rows = db.prepare(`SELECT * FROM rows WHERE table_id = ?${where}${searchWhere} ORDER BY position ASC,id ASC LIMIT ? OFFSET ?`).all(...args).map(publicRow);
         const countArgs = status && humanStates.has(status) ? [target.id, status] : [target.id];
-        if (search) countArgs.push(...Array(5).fill(searchValue));
+        if (search) countArgs.push(...Array(6).fill(searchValue));
         const matchedCount = db.prepare(`SELECT COUNT(*) AS count FROM rows WHERE table_id = ?${where}${searchWhere}`).get(...countArgs).count;
         return json(res, 200, { ok: true, table: publicTable(table(target.id)), rows, offset, limit, search, matchedCount, nextOffset: offset+rows.length<matchedCount ? offset + rows.length : null });
       }
@@ -417,18 +460,18 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
         mutate(target.id, user, 'rollback', `恢复记录 #${historyId} 操作前的表格内容`, () => {
           // Tombstones retain task IDs and receipts even when a restored version omits a row.
           db.prepare('UPDATE rows SET deleted=1,version=version+1,updated_by=?,updated_at=? WHERE table_id=?').run(user, now, target.id);
-          const restore = db.prepare('UPDATE rows SET position=?,article_no=?,source_type=?,source_url=?,title=?,note=?,human_status=?,fields_json=?,deleted=0,updated_by=?,updated_at=? WHERE id=? AND table_id=?');
+          const restore = db.prepare('UPDATE rows SET position=?,article_no=?,source_type=?,source_url=?,title=?,note=?,human_status=?,fields_json=?,confirmed_by=?,confirmed_user_id=?,confirmed_at=?,deleted=0,updated_by=?,updated_at=? WHERE id=? AND table_id=?');
           for (const saved of savedRows) {
             const existing = row(saved.id);
             if (!existing || existing.table_id !== target.id) throw new Error('历史行不存在，无法安全恢复任务绑定');
             const next=restoredContent(saved,existing);
-            restore.run(saved.position, next.article_no, next.source_type, next.source_url, next.title, next.note, next.human_status,next.fields_json, user, now, saved.id, target.id);
+            restore.run(saved.position, next.article_no, next.source_type, next.source_url, next.title, next.note, next.human_status,next.fields_json,next.confirmed_by,next.confirmed_user_id,next.confirmed_at, user, now, saved.id, target.id);
           }
           emit(target.id, '', 'table-rollback', { tableId: target.id, historyId, rowCount: savedRows.length, updatedAt: now });
         });
         return json(res, 200, { ok: true, table: publicTable(table(target.id)), historyId });
       }
-      if (req.method === 'POST' && action === 'rows') { const body = await parseBody(req); return json(res, 200, { ok: true, ...importRows(target.id, body.rows, user) }); }
+      if (req.method === 'POST' && action === 'rows') { const body = await parseBody(req); return json(res, 200, { ok: true, ...importRows(target.id, body.rows, user,req.tableConfirmation||confirmationActor(user)) }); }
       if (req.method === 'POST' && action === 'restart' && TABLE_ID.test(tableMatch[3] || '')) {
         const body=await parseBody(req),rowId=tableMatch[3],previousTaskId=String(body.previousTaskId||''),taskId=String(body.taskId||''),ifVersion=Number(body.ifVersion);
         if(!TABLE_ID.test(previousTaskId)||!TABLE_ID.test(taskId)||taskId===previousTaskId)return fail(res,400,'重启任务编号无效');
@@ -468,7 +511,7 @@ function createOnlineTableServer({ port = Number(process.env.PORT || 43900), hos
         });
         return json(res, 200, { ok: true });
       }
-      if (req.method === 'PATCH' && action === 'rows' && TABLE_ID.test(tableMatch[3] || '')) { const body = await parseBody(req); return json(res, 200, { ok: true, row: updateRow(target.id, tableMatch[3], body.patch || body, body.ifVersion, user, body.taskId) }); }
+      if (req.method === 'PATCH' && action === 'rows' && TABLE_ID.test(tableMatch[3] || '')) { const body = await parseBody(req); return json(res, 200, { ok: true, row: updateRow(target.id, tableMatch[3], body.patch || body, body.ifVersion, user, body.taskId,req.tableConfirmation||confirmationActor(user)) }); }
       return fail(res, 404, '接口不存在');
     } catch (error) { logger.error?.(error); return fail(res, error.status || 400, error.message || '请求失败', error.current ? { current: error.current } : {}); }
   }

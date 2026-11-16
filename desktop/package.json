@@ -1,6 +1,6 @@
 {
   "name": "product-comparison-desktop",
-  "version": "26.11.12",
+  "version": "26.11.16",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -24,7 +24,7 @@
     "artifactName": "ProductComparison-${version}-${arch}.${ext}",
     "electronVersion": "45.0.0",
     "electronDist": "node_modules/electron/dist",
-    "buildVersion": "26.11.12.1",
+    "buildVersion": "26.11.16.2",
     "directories": {
       "app": ".build-app",
       "output": "release"
@@ -32,6 +32,7 @@
     "files": [
       "desktop/**/*",
       "review.js",
+      "taobao-sales.js",
       "review-ui.js",
       "review.css",
       "vision-protocol.js",
@@ -60,6 +61,7 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
+      "deleteAppDataOnUninstall": false,
       "runAfterFinish": true
     },
     "publish": [
@@ -71,8 +73,8 @@
     ],
     "detectUpdateChannel": false,
     "releaseInfo": {
-      "releaseName": "26.11.12-v1",
-      "releaseNotes": "新增商品流程详情：从表格商品行查看主图、六阶段进度和等待原因，返回表格定位原商品；顶部固定关闭及当前步骤、供应商图片、平台状态、供货资料、处理记录导航。供应商候选铺满宽度并支持前后翻组，保留未保存备注。处理和等待状态及时回写对应表行。青创网同次搜图等待延长至45秒，增加原生回调缺失时的同次响应读取，取消清理等待，不重复提交不确定请求。保留高相似比价和供应商页面资料优先回填。"
+      "releaseName": "26.11.16-v2",
+      "releaseNotes": "商品资料完整后跳过草稿，直接保存到正式互拓待审核，最终审核上架仍在互拓完成。网商园真实店名与档口位置分开提取；从互拓完整供应商目录自动匹配店名、缩写和仓库，旧任务也可恢复名称对应关系。模型统一填写类别、字典和动态属性，自动补齐可修正项，软件可查看候选及依据。新增前保存提交检查点，超时或重启后只回查原商品，防止重复创建。正式互拓接口授权自动刷新，业务401与桌面登录状态分开处理。"
     }
   }
 }

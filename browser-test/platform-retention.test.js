@@ -1,0 +1,22 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
+const {_electron}=require('playwright');
+const root=path.resolve(__dirname,'..'),installed=path.join(root,'desktop/release/win-unpacked/ProductComparison.exe');
+test('平台账号跨旧成品和新版程序入口保留，可修改，密码留空保留且文件不存明文',{timeout:40000},async t=>{
+  try{await fs.access(installed);}catch{t.skip('本地没有旧成品，跳过跨入口兼容检查');return;}
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'platform-retention-')),profile=path.join(dir,'profile');let app;
+  t.after(async()=>{await app?.close();await fs.rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+  const user={id:'retention-user',username:'retention-user',displayName:'账号保留验收'};
+  const authenticate=async()=>{await app.evaluate((_,user)=>{globalThis.fetch=async url=>{if(String(url).startsWith('https://wsfile.cn/myladmin/api/auth/'))return Response.json(String(url).endsWith('/login')?{user,token:'fixture-retention',expiresAt:new Date(Date.now()+3600000).toISOString()}:{user,ok:true});throw Error('隔离验证禁止其他网络请求');};},user);const page=await app.firstWindow();await app.context().route('https://**/*',route=>route.abort());if(await page.locator('#loginButton').isVisible()){await page.locator('#username').fill(user.username);await page.locator('#password').fill('fixture');await page.locator('#loginButton').click({noWaitAfter:true});}await page.locator('#appShell').waitFor({state:'visible'});return page;};
+  app=await _electron.launch({executablePath:installed,args:[`--user-data-dir=${profile}`],env});let page=await authenticate();
+  await page.evaluate(()=>window.desktop.savePlatformAccount('wsy',{username:'saved-supplier',password:'fixture-old-password'}));await app.close();app=null;await fs.rm(path.join(profile,'session.json'),{force:true});
+  const bootstrap=path.join(dir,'new-main.cjs');await fs.writeFile(bootstrap,`const{app}=require('electron');app.setPath('userData',${JSON.stringify(profile)});require(${JSON.stringify(path.join(root,'desktop/main.js'))});`);
+  app=await _electron.launch({executablePath:path.join(root,'desktop/node_modules/electron/dist/electron.exe'),args:[bootstrap],env});page=await authenticate();await page.locator('#navSettings').click();
+  assert.equal((await page.evaluate(()=>window.desktop.snapshot())).platformAccounts.find(row=>row.platform==='wsy').username,'saved-supplier');
+  await page.locator('[data-platform-account=wsy] .edit-platform-account').click();assert.equal(await page.locator('#platformAccountPassword').inputValue(),'');await page.locator('#platformAccountUsername').fill('changed-supplier');await page.locator('#savePlatformAccount').click();await page.waitForFunction(()=>document.querySelector('#platformAccountMessage').textContent.includes('重新填写密码'));await page.locator('#platformAccountPassword').fill('fixture-new-password');await page.locator('#savePlatformAccount').click();await page.locator('#platformAccountDialog').waitFor({state:'hidden'});
+  await page.locator('[data-platform-account=wsy] .edit-platform-account').click();await page.locator('#savePlatformAccount').click();await page.locator('#platformAccountDialog').waitFor({state:'hidden'});
+  const state=await page.evaluate(()=>window.desktop.snapshot());assert.equal(state.platformAccounts.find(row=>row.platform==='wsy').username,'changed-supplier');assert.equal(JSON.stringify(state).includes('fixture-new-password'),false);
+  const dirName=require('../desktop/accounts').profileId(user),file=path.join(profile,'profiles',dirName,'platform-accounts.json'),disk=await fs.readFile(file,'utf8');assert.equal(disk.includes('changed-supplier'),false);assert.equal(disk.includes('fixture-new-password'),false);
+  const qa=path.join(root,'output/qa/workspace-web-2026-11-15');await fs.mkdir(qa,{recursive:true});await page.screenshot({path:path.join(qa,'platform-retained-editable.png')});
+  await app.close();app=null;await fs.rm(path.join(profile,'session.json'),{force:true});app=await _electron.launch({executablePath:path.join(root,'desktop/node_modules/electron/dist/electron.exe'),args:[bootstrap],env});page=await authenticate();const restored=await page.evaluate(()=>window.desktop.snapshot());assert.equal(restored.platformAccounts.find(row=>row.platform==='wsy').username,'changed-supplier');
+});

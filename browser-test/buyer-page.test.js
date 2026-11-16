@@ -1,6 +1,26 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {chromium}=require('playwright');
 const {scrapeBuyerPage}=require('../buyer-page');
+const {supplierMaterialInfo,mergeStructuredSupplierFacts,validateSupplierFacts}=require('../desktop/buyer-evidence');
+
+test('网商园店铺副标题是真实档口名，主标题位置单独保留且不取推荐商家',{timeout:15000},async t=>{
+  const browser=await chromium.launch({channel:'chromium',headless:true});t.after(()=>browser.close());const page=await browser.newPage();
+  await page.route('https://cs.wsy.com/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<h1>动感地带针织衫</h1><div class="shop-info"><div class="name" title="国际服装城11020">国际服装城11020</div><div class="subname"><i class="shop-icon silver"></i><span title="动感地带旗舰店">动感地带旗舰店</span></div></div><aside class="recommend"><div class="shop-info"><div class="name">错误推荐店铺</div><div class="subname"><span title="其他供应商">其他供应商</span></div></div></aside>'}));
+  await page.goto('https://cs.wsy.com/item.htm?id=26536882');const details=await page.evaluate(scrapeBuyerPage,{platform:'wsy',pageRole:'supplier'});
+  assert.equal(details.shopName,'动感地带旗舰店');assert.equal(details.boothName,'国际服装城11020');assert.ok(details.attributes.includes('店铺名称:动感地带旗舰店'));assert.ok(details.attributes.includes('档口位置:国际服装城11020'));
+  assert.equal(mergeStructuredSupplierFacts({supplierName:'国际服装城11020'},details).supplierName,'动感地带旗舰店');
+});
+
+test('网商园材质行优先读取title完整原文，空格分隔的三种成分及比例全部回填',{timeout:15000},async t=>{
+  const browser=await chromium.launch({channel:'chromium',headless:true});t.after(()=>browser.close());const page=await browser.newPage();
+  const full='聚氨酯弹性纤维(氨纶)2.8% 粘胶纤维(粘纤)28.4% 新型聚酯纤维68.8%';
+  await page.route('https://www.wsy.com/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:`<h1>翻领上衣</h1><div class="item_sx"><div class="li param"><a href="javascript:;" title="${full}">材质成分:聚氨酯弹性纤维(氨纶)2.8%...</a></div><div class="li"><a title="聚酯纤维">面料:聚酯纤维</a></div><div class="li"><a title="穿着方式:套头">穿着方式:套头</a></div><div class="li"><a title="查看商品">领型设计:翻领</a></div><div class="li recommend"><a title="棉100%">材质成分:棉...</a></div></div><div class="shipping">发货地 江苏苏州 全国通票5.50元（偏远地区除外） 上架时间：2026-09-01</div>`}));
+  await page.goto('https://www.wsy.com/item.htm?id=12345678');
+  const details=await page.evaluate(scrapeBuyerPage,{platform:'wsy',pageRole:'supplier'});
+  assert.equal(details.attributes[0],'材质成分:'+full);assert.equal(details.address,'江苏苏州');assert.ok(details.attributes.includes('穿着方式:套头'));assert.ok(details.attributes.includes('领型设计:翻领'));assert.equal(details.attributes.includes('材质成分:棉100%'),false);
+  const info=supplierMaterialInfo(details);assert.deepEqual(info.materials,[{name:'聚氨酯弹性纤维(氨纶)',rate:2.8},{name:'粘胶纤维(粘纤)',rate:28.4},{name:'新型聚酯纤维',rate:68.8}]);assert.equal(info.proportionsKnown,true);
+  const facts=validateSupplierFacts(mergeStructuredSupplierFacts({materials:[],evidence:{}},details),details);assert.deepEqual(facts.materials,info.materials);assert.equal(facts.missing.includes('供应商成分及比例'),false);assert.equal(facts.evidence.materials,'材质成分:'+full);
+});
 test('来源页采集六个平台主图和供货文字，推荐区不混入；登录和站外跳转明确阻塞',{timeout:25000},async t=>{
   const browser=await chromium.launch({channel:'chromium',headless:true});t.after(()=>browser.close());const page=await browser.newPage();
   const targets={taobao:'https://item.taobao.com/item.htm?id=12345678',douyin:'https://haohuo.jinritemai.com/views/product/item2?id=12345678',wsy:'https://www.wsy.com/item.htm?id=12345678',zwd:'https://stu.17zwd.com/product/123.html',qcc:'https://www.17qcc.com/goods/123.html',e3hui:'https://www.e3hui.cn/product/123.html'};

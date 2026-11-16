@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "找商品 · 精简工作台",
-  "version": "26.11.12.1",
-  "version_name": "26.11.12-v1",
+  "version": "26.11.16.2",
+  "version_name": "26.11.16-v2",
   "description": "抖音商品主图搜索四个平台，人工确认同款后采集供应商页面资料。",
   "action": {
     "default_title": "打开找商品工作台"

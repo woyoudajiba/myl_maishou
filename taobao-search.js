@@ -4,6 +4,18 @@
   const appKey = '12574478';
   const ruleId = 6401;
   let queue = Promise.resolve();
+  function verificationUrl(value) {
+    if(typeof value!=='string'||!value||value.length>8192)return '';
+    try {const url=new URL(value,endpoint);return url.protocol==='https:'&&!url.username&&!url.password&&!url.port&&/(^|\.)(?:taobao|tmall)\.com$/i.test(url.hostname)?url.href:'';}catch{return '';}
+  }
+  function verificationRequired(value) {
+    const error=new Error('淘宝图搜触发安全验证，请打开验证页处理后继续原任务；首页已登录不代表图搜验证已通过');
+    error.code='TAOBAO_VERIFICATION_REQUIRED';
+    // Challenge links may contain temporary signatures. Keep them out of logs,
+    // JSON exports and desktop persistence; only the extension opens the link.
+    Object.defineProperty(error,'verificationUrl',{value:verificationUrl(value)});
+    return error;
+  }
 
   function md5(value) {
     const bytes = new TextEncoder().encode(String(value));
@@ -61,21 +73,23 @@
     try{const image=new URL(rawImage.startsWith('//')?'https:'+rawImage:rawImage);if(image.protocol==='https:'&&!image.username&&!image.password&&!image.port&&/(^|\.)(?:alicdn\.com|taobaocdn\.com|tbcdn\.cn)$/.test(image.hostname))imageUrl=image.href;}catch{}
     if(!imageUrl)return null;
     const price=Number(item.umpPriceLog?.item_price||item.priceShow?.price||item.priceWap||'');
-    return {id,title:String(item.title||'').slice(0,1000),detailUrl:`https://${detail.hostname}/item.htm?id=${id}`,imageUrl,price:Number.isFinite(price)&&price>0?price:null,salesText:String(item.realSales||'').slice(0,200),shopName:String(item.shopInfo?.title||'').slice(0,300),location:String(item.procity||'').slice(0,120)};
+    return {id,title:String(item.title||'').slice(0,1000),detailUrl:`https://${detail.hostname}/item.htm?id=${id}`,imageUrl,price:Number.isFinite(price)&&price>0?price:null,...TaobaoSales.fields(item),shopName:String(item.shopInfo?.title||'').slice(0,300),location:String(item.procity||'').slice(0,120)};
     } catch { return null; }
   }
   async function perform(imageData) {
-    const rawCookies=await cookies(),tokenCookie=rawCookies.find(item=>item.name==='_m_h5_tk'&&item.value);
-    if(!tokenCookie)throw new Error('当前插件浏览器未登录淘宝，请先登录后重试');
-    let token;try{token=decodeURIComponent(tokenCookie.value).split('_')[0];}catch{token=tokenCookie.value.split('_')[0];}
-    if(!token)throw new Error('淘宝登录状态已过期，请重新登录');
     const resized=await resize(imageData),params={m:'pc_picture_search',device:'HMA-AL00',isBeta:'false',grayHair:'false',from:'nt_history',brand:'HUAWEI',info:'wifi',index:'4',rainbow:'',schemaType:'auction',elderHome:'false',isEnterSrpSearch:'true',newSearch:'false',network:'wifi',subtype:'',hasPreposeFilter:'false',prepositionVersion:'v2',client_os:'Android',gpsEnabled:'false',searchDoorFrom:'srp',debug_rerankNewOpenCard:'false',homePageVersion:'v7',searchElderHomeOpen:'false',search_action:'initiative',sugg:'_4_1',sversion:'13.6',style:'list',ttid:'1@tbwang_mac_1.0.0#pc',needTabs:'true',areaCode:'CN',vm:'nw',countryNum:'156',page:1,n:48,q:'',qSource:'manual',pageSource:'a21bo.jianhua/a.201856.dimagesearch',myCNA:'',tab:'all',sort:'_coefp',filterTag:'',service:'',prop:'',loc:'',start_price:null,end_price:null,startPrice:null,endPrice:null,categoryp:'',pageSize:60,strimg:resized.slice(resized.indexOf(',')+1),imgFrom:'upload',pageFrom:'a21n57.imgsearch'};
     const random=base64(crypto.getRandomValues(new Uint8Array(32))),timestamp=String(Date.now()),security={pageFrom:'a21n57.imgsearch',imgFrom:'upload',random,timestamp};
     params.pcSign=await digestSign(JSON.stringify(security)+'6dbd0668a0634ae9badd25d3da236f47');params.random=random;params.timestamp=timestamp;
-    const body={appId:'46006',params:JSON.stringify(params)},bodyText=JSON.stringify(body),requestTime=String(Date.now());
+    const body={appId:'46006',params:JSON.stringify(params)},bodyText=JSON.stringify(body);
+    // The official H5 SDK lets an initial TOKEN_EMPTY response establish the
+    // signing cookie. A missing signing token alone does not prove logout.
+    for(let attempt=0;attempt<2;attempt++){
+    const rawCookies=await cookies(),tokenCookie=rawCookies.find(item=>item.name==='_m_h5_tk'&&item.value);
+    let token;try{token=tokenCookie?decodeURIComponent(tokenCookie.value).split('_')[0]:undefined;}catch{token=tokenCookie.value.split('_')[0];}
+    const requestTime=String(Date.now());
     const searchUrl=endpoint+'?'+new URLSearchParams({jsv:'2.7.4',appKey,t:requestTime,sign:md5(`${token}&${requestTime}&${appKey}&${bodyText}`),api:'mtop.relationrecommend.wirelessrecommend.recommend',v:'2.0',timeout:'10000',type:'originaljson',dataType:'jsonp'});
     const requestHeaders=[{header:'Referer',operation:'set',value:'https://s.taobao.com/search/'},{header:'Origin',operation:'set',value:'https://s.taobao.com'}];
-    if(tokenCookie.partitionKey)requestHeaders.push({header:'Cookie',operation:'set',value:rawCookies.map(cookie=>`${cookie.name}=${cookie.value}`).join('; ')});
+    if(tokenCookie?.partitionKey)requestHeaders.push({header:'Cookie',operation:'set',value:rawCookies.map(cookie=>`${cookie.name}=${cookie.value}`).join('; ')});
     await updateRules({removeRuleIds:[ruleId],addRules:[{id:ruleId,priority:1,action:{type:'modifyHeaders',requestHeaders},condition:{regexFilter:'^https://h5api\\.m\\.taobao\\.com/h5/mtop\\.relationrecommend\\.wirelessrecommend\\.recommend/.*',resourceTypes:['xmlhttprequest'],initiatorDomains:[chrome.runtime.id]}}]});
     try {
       const response=await fetch(searchUrl,{method:'POST',credentials:'include',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:new URLSearchParams({data:bodyText}).toString(),signal:AbortSignal.timeout(20000)});
@@ -84,16 +98,25 @@
       if(response.body?.getReader){const reader=response.body.getReader(),decoder=new TextDecoder();let bytes=0;try{while(true){const part=await reader.read();if(part.done)break;bytes+=part.value.byteLength;if(bytes>5*1024*1024){await reader.cancel();throw new Error('淘宝图搜响应过大，已停止本次搜索');}text+=decoder.decode(part.value,{stream:true});}text+=decoder.decode();}finally{reader.releaseLock();}}
       else text=await response.text();
       if(text.length>5*1024*1024)throw new Error('淘宝图搜响应过大，已停止本次搜索');
-      let result;try{result=parse(text);}catch{throw new Error(`淘宝接口返回 HTTP ${response.status}，请检查登录或稍后重试`);}
+      let result;try{result=parse(text);}catch{if(/punish|_____tmd_____|validate/i.test(response.url||'')&&verificationUrl(response.url))throw verificationRequired(response.url);throw new Error(`淘宝接口返回 HTTP ${response.status}，请检查登录或稍后重试`);}
       const ret=Array.isArray(result?.ret)?result.ret.join('; '):'';
-      if(!response.ok||/RGV587|FAIL|ERROR|DENY|ILLEGAL|SESSION_EXPIRED/i.test(ret)||/punish|deny/i.test(result?.data?.url||''))throw new Error(/SESSION_EXPIRED|TOKEN|LOGIN/i.test(ret)?'淘宝登录状态失效，请在浏览器重新登录':/RGV587|DENY|punish/i.test(ret+' '+(result?.data?.url||''))?'淘宝要求安全验证，请在浏览器完成验证后重新搜索':`淘宝图搜暂不可用${ret.match(/^[A-Z][A-Z0-9_]{2,80}/)?.[0]?`（${ret.match(/^[A-Z][A-Z0-9_]{2,80}/)[0]}）`:''}`);
+      const securityBlocked=/RGV587|USER_VALIDATE|punish|_____tmd_____/i.test(ret+' '+(result?.data?.url||''));
+      if(securityBlocked)throw verificationRequired(result?.data?.url);
+      if(/DENY|DENIED/i.test(ret))throw new Error('淘宝图搜访问被拒绝，接口没有明确返回验证要求；请在淘宝搜图页检查权限或稍后重试');
+      const tokenRejected=/FAIL_SYS_TOKEN_(?:EMPTY|EXOIRED|EXPIRED)/i.test(ret);
+      if(response.ok&&tokenRejected){
+        if(attempt===0){const refreshed=await cookies(),next=refreshed.find(item=>item.name==='_m_h5_tk'&&item.value);if(next?.value&&next.value!==tokenCookie?.value)continue;}
+        throw new Error('淘宝图搜接口令牌未就绪或未能刷新，不能据此判断账号未登录；请在装有插件的同一浏览器资料中打开淘宝搜同款页面后重试，仍失败请检查 Cookie 权限或浏览器资料是否一致');
+      }
+      if(!response.ok||/FAIL|ERROR|ILLEGAL|SESSION_EXPIRED/i.test(ret))throw new Error(/SESSION_EXPIRED|LOGIN/i.test(ret)?'淘宝图搜接口返回登录失效，请在插件所在的同一浏览器资料重新登录后重试':`淘宝图搜暂不可用${ret.match(/^[A-Z][A-Z0-9_]{2,80}/)?.[0]?`（${ret.match(/^[A-Z][A-Z0-9_]{2,80}/)[0]}）`:''}`);
       const values=Array.isArray(result?.data?.itemsArray)?result.data.itemsArray:Array.isArray(result?.data?.data?.itemsArray)?result.data.data.itemsArray:null;
       if(!values)throw new Error('淘宝未返回同款候选，请确认登录状态或稍后重试');
-      const seen=new Set();return values.slice(0,120).map(candidate).filter(item=>item&&!seen.has(item.id)&&seen.add(item.id)).slice(0,60);
+      const seen=new Set();return TaobaoSales.sort(values.slice(0,120).map(candidate).filter(item=>item&&!seen.has(item.id)&&seen.add(item.id))).slice(0,60);
     } catch(error) {
       if(error?.name==='TimeoutError'||error?.name==='AbortError')throw new Error('淘宝图搜等待超过20秒，请稍后重试');
       throw error;
     } finally { await updateRules({removeRuleIds:[ruleId]}).catch(()=>{}); }
+    }
   }
   function search(imageData) {
     if(typeof imageData!=='string'||imageData.length>6*1024*1024||!/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(imageData))return Promise.reject(new Error('淘宝搜索图片数据无效'));

@@ -7,6 +7,21 @@
     const unique=values=>[...new Set(values.map(clean).filter(Boolean))];
     const visible=node=>!!node&&(node.offsetWidth||node.offsetHeight||node.getClientRects().length)>0&&getComputedStyle(node).visibility!=='hidden';
     const read=node=>clean(node?.innerText||node?.textContent);
+    const readProperty=node=>{
+      const displayed=read(node),field=displayed.match(/^([^:：]{1,40})\s*[:：]\s*(.*)$/);
+      if(!field)return displayed;
+      const candidates=[node,...node.querySelectorAll('[title]')];
+      for(const candidate of candidates){
+        const full=clean(candidate.getAttribute('title')),shown=read(candidate);
+        if(!full||!shown||!displayed.includes(shown)||/(?:\.\.\.|…)\s*$/.test(full))continue;
+        const labeled=full.match(/^([^:：]{1,40})\s*[:：]\s*(.*)$/);
+        if(labeled&&labeled[1].trim()!==field[1].trim())continue;
+        const value=labeled?labeled[2]:full;
+        const prefix=field[2].replace(/(?:\.\.\.|…)\s*$/,'').trim();
+        if(prefix&&value.startsWith(prefix)&&value.length>=prefix.length)return field[1].trim()+':'+value;
+      }
+      return displayed;
+    };
     const firstText=selectors=>{for(const selector of selectors){const value=read(document.querySelector(selector));if(value)return value;}return '';};
     const validHost=(host,domains)=>(domains||[]).some(domain=>host===domain||host.endsWith('.'+domain));
     const safeImage=(value,platform)=>{
@@ -17,12 +32,18 @@
     const rowsToAttributes=rows=>{const output={};for(const row of rows){const match=clean(row).match(/^([^:：]{1,40})\s*[:：]\s*(.{1,300})$/);if(match&&!output[match[1]])output[match[1]]=match[2];}return output;};
     const splitValues=value=>unique(String(value||'').split(/[,，、\s]+/));
     const detailsResult=(platform,base)=>{
-      const attributes=[...(Array.isArray(base.attributes)?base.attributes:[])];let title=base.title,sku=base.sku,shopName=base.shopName,price=base.price,priceType='supply',priceTiers=[],resaleFloor=null,colors=[],sizes=[],mainImages=base.images||[],colorImages=[],detailImages=[],detailImageNodes=0,placeholders=0;
+      const attributes=[...(Array.isArray(base.attributes)?base.attributes:[])];let title=base.title,sku=base.sku,shopName=base.shopName,boothName='',address=base.address||'',price=base.price,priceType='supply',priceTiers=[],resaleFloor=null,colors=[],sizes=[],mainImages=base.images||[],colorImages=[],detailImages=[],detailImageNodes=0,placeholders=0;
       const productImageNode=node=>!node.closest('[class*="recommend"],[class*="Recommend"],[class*="related"],[class*="Related"]')&&!/(?:qrcode|qr_code|banner_manage)/i.test(Array.from(node.attributes).map(attribute=>attribute.value).join(' '));
       if(platform==='wsy'){
-        const itemAttributes=Array.from(document.querySelectorAll('.item_sx .li a')).map(read).filter(Boolean);attributes.push(...itemAttributes);title=firstText(['.item-mb a','[class*="item-mb"] a','h1'])||title;
+        const itemAttributes=Array.from(document.querySelectorAll('.item_sx .li a')).filter(node=>!node.closest('[class*="recommend"],[class*="Recommend"],[class*="related"]')).map(readProperty).filter(Boolean);attributes.unshift(...itemAttributes);title=firstText(['.item-mb a','[class*="item-mb"] a','h1'])||title;
         const article=firstText(['.item-mb .item-no','.item-sku','.item-sale'])||read(document.querySelector('.item-mb'));sku=article.match(/货号\s*[:：]?\s*([\w\u3400-\u9fff-]+)/)?.[1]||itemAttributes.map(value=>value.match(/^货号\s*[:：]\s*(.+)$/)?.[1]).find(Boolean)||sku;
-        shopName=firstText(['.shop-info .name','.shop-info [class*="name"]'])||shopName;price=Number(read(document.querySelector('.J_p_price')).replace(/[^\d.]/g,''))||price;
+        const booth=firstText(['.shop-info .name']),storeNode=document.querySelector('.shop-info .subname span[title]'),store=clean(storeNode?.getAttribute('title'))||firstText(['.shop-info .subname span']);
+        shopName=store||booth||shopName;boothName=store&&store!==booth?booth:'';
+        if(boothName)attributes.push('档口位置:'+boothName);if(store)attributes.push('店铺名称:'+store);
+        const wsyText=clean(document.body?.innerText||'');
+        const wsyAddress=wsyText.match(/发货地\s*[:：]?\s*([^\n\r]{2,50}?)(?=\s*(?:全国|运费|上架时间|浏览量|$))/)?.[1]?.trim();
+        address=wsyAddress||firstText(['[class*="delivery"] [class*="address"]','.item-delivery .address','[class*="ship"] [class*="address"]'])||address;
+        price=Number(read(document.querySelector('.J_p_price')).replace(/[^\d.]/g,''))||price;
         colors=unique(Array.from(document.querySelectorAll('#J_TSaleProp a')).map(read));sizes=unique(Array.from(document.querySelectorAll('.table-sku tr')).map(row=>read(row.querySelector('td:first-child'))));
         const detailRoot=document.querySelector('#J_DivItemDesc'),hero=imageList('.wsy-booth img.J_ImgBooth',['data-zoom-image','src'],'wsy');mainImages=unique([...mainImages,...hero,...imageList('.wsy-gallery .J_pic_open[href]',['href'],'wsy')]);
         const detailNodes=detailRoot?Array.from(detailRoot.querySelectorAll('img')).filter(productImageNode):[];detailImageNodes=detailNodes.length;detailImages=unique(detailNodes.flatMap(node=>['data-original','data-src','data-zoom-image','src'].map(key=>safeImage(node.getAttribute(key),'wsy')).filter(Boolean)));
@@ -55,7 +76,7 @@
       const imageCoverage={detailNodes:detailImageNodes,detailImages:detailImages.length,placeholders,complete:detailImageNodes===0||placeholders===0&&detailImages.length>=detailImageNodes};if(detailImageNodes&&!imageCoverage.complete)missingFields.push('detailImages');
       const pageRole=base.pageRole==='supplier'?'supplier':'source',required=pageRole==='supplier'?['title','sku','shopName','price','colors','sizes','mainImage']:['title','mainImage'];
       const quality={state:required.every(field=>!missingFields.includes(field))&&imageCoverage.complete?'complete':'partial',pageRole,missingFields,imageCoverage};
-      return{...base,url:location.href,title,sku:clean(sku).slice(0,200),shopName:clean(shopName).slice(0,300),price:Number.isFinite(price)&&price>0?price:null,priceType,resaleFloor,priceTiers,colors,sizes,attributes:unique(attributes).slice(0,80),images:allImages,imageGroups:{main:mainImages.slice(0,20),colors:colorImages.slice(0,20),details:detailImages.slice(0,40)},quality,visibleText:clean(document.body?.innerText).slice(0,40000)};
+      return{...base,url:location.href,title,sku:clean(sku).slice(0,200),shopName:clean(shopName).slice(0,300),boothName:clean(boothName).slice(0,300),address:clean(address).slice(0,200),price:Number.isFinite(price)&&price>0?price:null,priceType,resaleFloor,priceTiers,colors,sizes,attributes:unique(attributes).slice(0,80),images:allImages,imageGroups:{main:mainImages.slice(0,20),colors:colorImages.slice(0,20),details:detailImages.slice(0,40)},quality,visibleText:clean(document.body?.innerText).slice(0,40000)};
     };
     if(location.protocol!=='https:'||!validHost(location.hostname,hostMap[input.platform]))return{error:'商品页面跳转到其他站点，请检查登录或链接'};
     const body=clean(document.body?.innerText).slice(0,40000);
@@ -118,7 +139,8 @@
     const title=clean(product.name||firstText(['h1'])||genericTitle||meta('meta[property="og:title"]')||document.title).slice(0,1000);
     const shopName=clean(offer.seller?.name||firstText(['[class*="shopName"],[class*="shop-name"],[class*="store-name"]'])||(input.platform==='douyin'?firstText(['.shop-component__shop-content__basic-info__title-area__name']):'')).slice(0,300);
     const price=Number(offer.price);
-    const base={url:location.href,title,sku:clean(product.sku||product.mpn||'').slice(0,200),shopName,price:Number.isFinite(price)&&price>0?price:null,description,attributes:unique(attributes),images:unique(input.platform==='taobao'?[...taobaoImages,...productImages]:productImages).slice(0,60),visibleText:body,salesText:(body.match(/(?:已售|总销量|销量|月售)\s*[\d.,万千+]+\s*(?:件|笔)?|[\d.,万千+]+\s*人(?:付款|购买)/)||[])[0]||'',productId:new URL(location.href).searchParams.get('id')||'',collectedAt:new Date().toISOString(),pageRole:input.pageRole};
+    const address=clean(body.match(/发货地\s*[:：]?\s*([^\n\r]{2,50}?)(?=\s*(?:全国|运费|上架时间|浏览量|$))/)?.[1]||'').slice(0,200);
+    const base={url:location.href,title,sku:clean(product.sku||product.mpn||'').slice(0,200),shopName,address,price:Number.isFinite(price)&&price>0?price:null,description,attributes:unique(attributes),images:unique(input.platform==='taobao'?[...taobaoImages,...productImages]:productImages).slice(0,60),visibleText:body,salesText:(body.match(/(?:已售|总销量|销量|月售)\s*[\d.,万千+]+\s*(?:件|笔)?|[\d.,万千+]+\s*人(?:付款|购买)/)||[])[0]||'',productId:new URL(location.href).searchParams.get('id')||'',collectedAt:new Date().toISOString(),pageRole:input.pageRole};
     if(supplierPlatforms.has(input.platform))return detailsResult(input.platform,base);
     return{...base,quality:{state:base.title&&base.images.length?'complete':'partial',pageRole:input.pageRole||'source',missingFields:[!base.title?'title':'',!base.images.length?'mainImage':''].filter(Boolean),imageCoverage:{detailNodes:0,detailImages:0,placeholders:0,complete:true}}};
   }
